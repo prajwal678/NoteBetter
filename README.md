@@ -4,18 +4,6 @@ NoteBetter is a lightweight, terminal-based text editor written in C, inspired b
 
 ---
 
-## Features
-
-- Syntax highlighting for C/C++ files
-- Search functionality (Ctrl-F)
-- Simple and intuitive keyboard shortcuts
-- Status bar with file information
-- Line numbers
-- Auto-save warnings
-- Multi-line editing support
-
----
-
 ## Prerequisites
 
 - GCC compiler
@@ -76,3 +64,13 @@ make clean
 - `Arrow Keys`: Move cursor
 - `Page Up/Down`: Scroll page up/down
 - `Home/End`: Move to start/end of line
+
+## Features
+
+- Syntax highlighting for C/C++ files
+- Search functionality (Ctrl-F)
+- Simple and intuitive keyboard shortcuts
+- Status bar with file information
+- Line numbers
+- Auto-save warnings
+- Multi-line editing support
