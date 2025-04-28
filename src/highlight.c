@@ -4,32 +4,95 @@
 #include "highlight.h"
 #include "config.h"
 
-
 static EDITOR_SYNTAX HLDB[] = {
     {
         "c",
-        (char *[]){ ".c", ".h", ".cpp", NULL },
+        (char *[]){ ".c", ".h", NULL },
         (char *[]){
-            "switch", "if", "while", "for", "break", "continue", "return",
-            "else", "struct", "union", "typedef", "static", "enum", "class",
-            "case", "int|", "long|", "double|", "float|", "char|", "unsigned|",
-            "signed|", "void|", NULL
+            "auto", "break", "case", "continue", "default", "do", "else", "enum",
+            "extern", "for", "goto", "if", "register", "return", "sizeof", "static",
+            "struct", "switch", "typedef", "union", "volatile", "while", "_Alignas",
+            "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary",
+            "_Noreturn", "_Static_assert", "_Thread_local", "inline", "restrict",
+            
+            // preprocessor words
+            "#include", "#define", "#ifndef", "#ifdef", "#endif", "#if", "#else", "#elif",
+            "#pragma", "#error", "#undef", 
+
+            // data types
+            "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
+            "void|", "short|", "size_t|", "ptrdiff_t|", "const|", "FILE|", NULL
         },
         "//",
         "/*",
         "*/",
         HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
     },
+    {
+        "cpp",
+        (char *[]){ ".cpp", ".cc", ".hpp", ".hxx", NULL },
+        (char *[]){
+            // c++ keywords
+            "alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand", "bitor",
+            "bool", "break", "case", "catch", "class", "compl", "concept", "const",
+            "consteval", "constexpr", "constinit", "const_cast", "continue", "co_await",
+            "co_return", "co_yield", "decltype", "default", "delete", "do", "dynamic_cast",
+            "else", "enum", "explicit", "export", "extern", "false", "for", "friend",
+            "goto", "if", "inline", "mutable", "namespace", "new", "noexcept", "not",
+            "not_eq", "nullptr", "operator", "or", "or_eq", "private", "protected", "public",
+            "reflexpr", "register", "reinterpret_cast", "requires", "return", "sizeof",
+            "static", "static_assert", "static_cast", "struct", "switch", "template", "this",
+            "thread_local", "throw", "true", "try", "typedef", "typeid", "typename", "union",
+            "using", "virtual", "volatile", "while", "xor", "xor_eq",
+            
+            // preprocessor words
+            "#include", "#define", "#ifndef", "#ifdef", "#endif", "#if", "#else", "#elif",
+            "#pragma", "#error", "#undef",
+
+            // data types
+            "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
+            "void|", "short|", "string|", "vector|", "map|", "set|", "auto|", "const|",
+            "size_t|", "bool|", "FILE|", NULL
+        },
+        "//",
+        "/*",
+        "*/",
+        HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
+    },
+    {
+        "python",
+        (char *[]){ ".py", NULL },
+        (char *[]){
+            "and", "as", "assert", "async", "await", "break", "class", "continue", 
+            "def", "del", "elif", "else", "except", "False", "finally", "for", 
+            "from", "global", "if", "import", "in", "is", "lambda", "None", 
+            "nonlocal", "not", "or", "pass", "raise", "return", "True", "try", 
+            "while", "with", "yield",
+            
+            "int|", "float|", "str|", "list|", "dict|", "set|", "bool|", "tuple|", 
+            "bytes|", "object|", "range|", NULL
+        },
+        "#",
+        "'''",
+        "'''",
+        HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
+    }
 };
 
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
 
+
 int isSeparator(int c) {
-    return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];", c) != NULL;
+    return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];:{}#", c) != NULL;
 }
 
 void editorUpdateSyntax(ROW_DATA *row) {
-    row->hl = realloc(row->hl, row->render_size);
+    if (row == NULL || row->render == NULL || row->render_size <= 0) return;
+    
+    unsigned char *new_hl = realloc(row->hl, row->render_size);
+    if (new_hl == NULL) return;
+    row->hl = new_hl;
+    
     memset(row->hl, HL_NORMAL, row->render_size);
 
     if (CONFIG.syntax == NULL) return;
@@ -46,6 +109,18 @@ void editorUpdateSyntax(ROW_DATA *row) {
     int prev_sep = 1;
     int in_string = 0;
     int in_comment = (row->index > 0 && CONFIG.row[row->index - 1].hl_open_comment);
+    
+    if (row->render[0] == '#') {
+        int i = 1;
+        while (i < row->render_size && isspace(row->render[i])) i++;
+        
+        int start = i;
+        while (i < row->render_size && !isspace(row->render[i]) && row->render[i] != '(') i++;
+        
+        if (i > start) {
+            memset(&row->hl[0], HL_KEYWORD1, i);
+        }
+    }
 
     int i = 0;
     while (i < row->render_size) {
@@ -68,11 +143,13 @@ void editorUpdateSyntax(ROW_DATA *row) {
                     in_comment = 0;
                     prev_sep = 1;
                     continue;
-                } else {
+                }
+                else {
                     i++;
                     continue;
                 }
-            } else if (!strncmp(&row->render[i], mcs, mcs_len)) {
+            }
+            else if (!strncmp(&row->render[i], mcs, mcs_len)) {
                 memset(&row->hl[i], HL_MULTI_LINE_COMMENT, mcs_len);
                 i += mcs_len;
                 in_comment = 1;
@@ -92,7 +169,8 @@ void editorUpdateSyntax(ROW_DATA *row) {
                 i++;
                 prev_sep = 1;
                 continue;
-            } else {
+            }
+            else {
                 if (c == '"' || c == '\'') {
                     in_string = c;
                     row->hl[i] = HL_STRING;
@@ -160,6 +238,7 @@ void editorSelectSyntaxHighlight(void) {
     if (CONFIG.filename == NULL) return;
 
     char *ext = strrchr(CONFIG.filename, '.');
+    if (!ext) return;
 
     for (unsigned int j = 0; j < HLDB_ENTRIES; j++) {
         EDITOR_SYNTAX *s = &HLDB[j];

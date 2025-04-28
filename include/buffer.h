@@ -1,6 +1,7 @@
 #ifndef BUFFER_H
 #define BUFFER_H
 
+
 typedef struct AppendBuffer {
     char *buffer;
     int length;

@@ -3,6 +3,7 @@
 #include "row.h"
 #include "config.h"
 #include "highlight.h"
+#include "highlight_thread.h"
 
 
 int editorRowCxToRx(ROW_DATA *row, int cx) {
@@ -28,26 +29,30 @@ int editorRowRxToCx(ROW_DATA *row, int rx) {
 }
 
 void updateRow(ROW_DATA *row) {
+    if (row == NULL || row->string == NULL) return;
+    
     int tabs = 0;
     for (int j = 0; j < row->size; j++)
         if (row->string[j] == '\t') tabs++;
 
     free(row->render);
     row->render = malloc(row->size + tabs*(TAB_SPACE - 1) + 1);
+    if (row->render == NULL) return; /* Check for allocation failure */
 
     int idx = 0;
     for (int j = 0; j < row->size; j++) {
         if (row->string[j] == '\t') {
             row->render[idx++] = ' ';
             while (idx % TAB_SPACE != 0) row->render[idx++] = ' ';
-        } else {
+        }
+        else {
             row->render[idx++] = row->string[j];
         }
     }
     row->render[idx] = '\0';
     row->render_size = idx;
 
-    editorUpdateSyntax(row);
+    highlightThreadQueueRow(row);
 }
 
 void editorInsertRow(int at, char *s, size_t len) {

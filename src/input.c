@@ -37,7 +37,8 @@ int editorReadKey(void) {
                         case '8': return END_KEY;
                     }
                 }
-            } else {
+            }
+            else {
                 switch (seq[1]) {
                     case 'A': return ARROW_UP;
                     case 'B': return ARROW_DOWN;
@@ -47,7 +48,8 @@ int editorReadKey(void) {
                     case 'F': return END_KEY;
                 }
             }
-        } else if (seq[0] == 'O') {
+        }
+        else if (seq[0] == 'O') {
             switch (seq[1]) {
                 case 'H': return HOME_KEY;
                 case 'F': return END_KEY;
@@ -55,7 +57,8 @@ int editorReadKey(void) {
         }
 
         return '\x1b';
-    } else {
+    }
+    else {
         return c;
     }
 }
@@ -74,18 +77,21 @@ char *editorPrompt(char *prompt, void (*callback)(char *, int)) {
         int c = editorReadKey();
         if (c == DELETE_KEY || c == CTRL_KEY('h') || c == BACKSPACE) {
             if (buflen != 0) buf[--buflen] = '\0';
-        } else if (c == '\x1b') {
+        }
+        else if (c == '\x1b') {
             setStatusMessage("");
             if (callback) callback(buf, c);
             free(buf);
             return NULL;
-        } else if (c == '\r') {
+        }
+        else if (c == '\r') {
             if (buflen != 0) {
                 setStatusMessage("");
                 if (callback) callback(buf, c);
                 return buf;
             }
-        } else if (!iscntrl(c) && c < 128) {
+        }
+        else if (!iscntrl(c) && c < 128) {
             if (buflen == bufsize - 1) {
                 bufsize *= 2;
                 buf = realloc(buf, bufsize);

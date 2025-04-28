@@ -26,24 +26,40 @@ void editorDrawRows(APPEND_BUFFER *ab) {
                 }
                 while (padding--) appendBufferAppend(ab, " ", 1);
                 appendBufferAppend(ab, welcome, welcomelen);
-            } else {
+            }
+            else {
                 appendBufferAppend(ab, "-", 1);
             }
-        } else {
+        } 
+        else {
+            if (CONFIG.row[filerow].render == NULL) {
+                appendBufferAppend(ab, "[NULL]", 6);
+                appendBufferAppend(ab, "\x1b[K", 3);
+                appendBufferAppend(ab, "\r\n", 2);
+                continue;
+            }
+            
             int len = CONFIG.row[filerow].render_size - CONFIG.column_offset;
             if (len < 0) len = 0;
             if (len > CONFIG.screen_columns) len = CONFIG.screen_columns;
+            
             char *c = &CONFIG.row[filerow].render[CONFIG.column_offset];
-            unsigned char *hl = &CONFIG.row[filerow].hl[CONFIG.column_offset];
+            
+            unsigned char *hl = NULL;
+            if (CONFIG.row[filerow].hl != NULL) {
+                hl = &CONFIG.row[filerow].hl[CONFIG.column_offset];
+            }
+            
             int current_color = -1;
             for (int j = 0; j < len; j++) {
-                if (hl[j] == HL_NORMAL) {
+                if (hl == NULL || hl[j] == HL_NORMAL) {
                     if (current_color != -1) {
                         appendBufferAppend(ab, "\x1b[39m", 5);
                         current_color = -1;
                     }
                     appendBufferAppend(ab, &c[j], 1);
-                } else {
+                }
+                else {
                     int color = editorSyntaxToColor(hl[j]);
                     if (color != current_color) {
                         current_color = color;
@@ -77,7 +93,8 @@ void editorDrawStatusBar(APPEND_BUFFER *ab) {
         if (CONFIG.screen_columns - len == rlen) {
             appendBufferAppend(ab, rstatus, rlen);
             break;
-        } else {
+        }
+        else {
             appendBufferAppend(ab, " ", 1);
             len++;
         }

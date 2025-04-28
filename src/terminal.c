@@ -25,12 +25,16 @@ void enableRawMode(void) {
     atexit(disableRawMode);
 
     struct termios raw = CONFIG.pre_editor_terminal_config;
+    // input nomo
     raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    // output nomo
     raw.c_oflag &= ~(OPOST);
     raw.c_cflag |= (CS8);
+    // echo, canonical mode, extended functions, and signal chars
     raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 1;
+    // read timeouts
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
@@ -60,7 +64,8 @@ int getWindowSize(int *rows, int *cols) {
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
         if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1;
         return getCursorPosition(rows, cols);
-    } else {
+    }
+    else {
         *cols = ws.ws_col;
         *rows = ws.ws_row;
         return 0;

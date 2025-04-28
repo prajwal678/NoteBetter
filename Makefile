@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -I./include
-LDFLAGS = 
+CFLAGS = -Wall -Wextra -I./include -pthread
+LDFLAGS = -pthread
 
 SRC_DIR = src
 OBJ_DIR = obj

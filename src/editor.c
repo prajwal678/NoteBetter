@@ -7,6 +7,7 @@
 #include "input.h"
 #include "output.h"
 #include "fileio.h"
+#include "highlight_thread.h"
 
 
 void editorInsertChar(int c) {
@@ -21,7 +22,8 @@ void editorInsertChar(int c) {
 void editorInsertNewline(void) {
     if (CONFIG.cursor_x == 0) {
         editorInsertRow(CONFIG.cursor_y, "", 0);
-    } else {
+    }
+    else {
         ROW_DATA *row = &CONFIG.row[CONFIG.cursor_y];
         editorInsertRow(CONFIG.cursor_y + 1, 
                        &row->string[CONFIG.cursor_x],
@@ -43,7 +45,8 @@ void editorDelChar(void) {
     if (CONFIG.cursor_x > 0) {
         rowDelChar(row, CONFIG.cursor_x - 1);
         CONFIG.cursor_x--;
-    } else {
+    }
+    else {
         CONFIG.cursor_x = CONFIG.row[CONFIG.cursor_y - 1].size;
         rowAppendString(&CONFIG.row[CONFIG.cursor_y - 1],
                        row->string,
@@ -60,12 +63,12 @@ void editorFind(void) {
     int saved_coloff = CONFIG.column_offset;
     int saved_rowoff = CONFIG.row_offset;
 
-    char *query = editorPrompt("Search: %s (Use ESC/Arrows/Enter)",
-                             editorFindCallback);
+    char *query = editorPrompt("Search: %s (Use ESC/Arrows/Enter)", editorFindCallback);
 
     if (query) {
         free(query);
-    } else {
+    }
+    else {
         CONFIG.cursor_x = saved_cx;
         CONFIG.cursor_y = saved_cy;
         CONFIG.column_offset = saved_coloff;
@@ -81,11 +84,14 @@ void editorFindCallback(char *query, int key) {
         last_match = -1;
         direction = 1;
         return;
-    } else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
+    }
+    else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
         direction = 1;
-    } else if (key == ARROW_LEFT || key == ARROW_UP) {
+    }
+    else if (key == ARROW_LEFT || key == ARROW_UP) {
         direction = -1;
-    } else {
+    }
+    else {
         last_match = -1;
         direction = 1;
     }
@@ -97,7 +103,8 @@ void editorFindCallback(char *query, int key) {
         current += direction;
         if (current == -1) {
             current = CONFIG.numrows - 1;
-        } else if (current == CONFIG.numrows) {
+        }
+        else if (current == CONFIG.numrows) {
             current = 0;
         }
 
@@ -115,10 +122,10 @@ void editorFindCallback(char *query, int key) {
 
 void editorScroll(void) {
     CONFIG.render_x = 0;
+
     if (CONFIG.cursor_y < CONFIG.numrows) {
         CONFIG.render_x = editorRowCxToRx(&CONFIG.row[CONFIG.cursor_y], CONFIG.cursor_x);
     }
-
     if (CONFIG.cursor_y < CONFIG.row_offset) {
         CONFIG.row_offset = CONFIG.cursor_y;
     }
@@ -140,24 +147,29 @@ void editorMoveCursor(int key) {
         case ARROW_LEFT:
             if (CONFIG.cursor_x != 0) {
                 CONFIG.cursor_x--;
-            } else if (CONFIG.cursor_y > 0) {
+            }
+            else if (CONFIG.cursor_y > 0) {
                 CONFIG.cursor_y--;
                 CONFIG.cursor_x = CONFIG.row[CONFIG.cursor_y].size;
             }
             break;
+
         case ARROW_RIGHT:
             if (row && CONFIG.cursor_x < row->size) {
                 CONFIG.cursor_x++;
-            } else if (row && CONFIG.cursor_x == row->size) {
+            }
+            else if (row && CONFIG.cursor_x == row->size) {
                 CONFIG.cursor_y++;
                 CONFIG.cursor_x = 0;
             }
             break;
+
         case ARROW_UP:
             if (CONFIG.cursor_y != 0) {
                 CONFIG.cursor_y--;
             }
             break;
+
         case ARROW_DOWN:
             if (CONFIG.cursor_y < CONFIG.numrows) {
                 CONFIG.cursor_y++;
@@ -174,7 +186,6 @@ void editorMoveCursor(int key) {
 
 void editorProcessKeypress(void) {
     static int quit_times = QUIT_TIMES;
-
     int c = editorReadKey();
 
     switch (c) {
@@ -189,8 +200,18 @@ void editorProcessKeypress(void) {
                 quit_times--;
                 return;
             }
+            
+            /* Perform cleanup before exit */
+            /* Re-enable thread shutdown */
+            highlightThreadShutdown();
+            
+            /* Clear screen before exit */
             write(STDOUT_FILENO, "\x1b[2J", 4);
             write(STDOUT_FILENO, "\x1b[H", 3);
+            
+            /* Reset terminal mode */
+            disableRawMode();
+            
             exit(0);
             break;
 
@@ -222,7 +243,8 @@ void editorProcessKeypress(void) {
             {
                 if (c == PAGE_UP) {
                     CONFIG.cursor_y = CONFIG.row_offset;
-                } else if (c == PAGE_DOWN) {
+                }
+                else if (c == PAGE_DOWN) {
                     CONFIG.cursor_y = CONFIG.row_offset + CONFIG.screen_rows - 1;
                     if (CONFIG.cursor_y > CONFIG.numrows) CONFIG.cursor_y = CONFIG.numrows;
                 }
@@ -269,4 +291,6 @@ void initEditor(void) {
     if (getWindowSize(&CONFIG.screen_rows, &CONFIG.screen_columns) == -1)
         die("getWindowSize");
     CONFIG.screen_rows -= 2; // indenting
+    
+    highlightThreadInit();
 }
