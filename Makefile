@@ -1,11 +1,12 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -I./include -pthread
+CC ?= gcc
+OPT ?= -O2
+CFLAGS = -std=c11 -Wall -Wextra -I./include $(OPT) -MMD -MP -pthread -D_DEFAULT_SOURCE -D_GNU_SOURCE -D_DARWIN_C_SOURCE
 LDFLAGS = -pthread
 
 SRC_DIR = src
 OBJ_DIR = obj
 BIN_DIR = bin
-INSTALL_DIR = /usr/local/bin
+INSTALL_DIR ?= /usr/local/bin
 
 BINARY = notebetter
 TARGET = $(BIN_DIR)/$(BINARY)
@@ -29,14 +30,16 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | directories
 
 install: $(TARGET)
 	@echo "Installing $(BINARY) to $(INSTALL_DIR)"
-	@sudo install -m 755 $(TARGET) $(INSTALL_DIR)/$(BINARY)
+	@install -m 755 $(TARGET) $(INSTALL_DIR)/$(BINARY)
 	@echo "Installation complete! You can now run '$(BINARY)' from anywhere."
 
-uninstall: clean
+uninstall:
 	@echo "Removing $(BINARY) from $(INSTALL_DIR)"
-	@sudo rm -f $(INSTALL_DIR)/$(BINARY)
+	@rm -f $(INSTALL_DIR)/$(BINARY)
 	@echo "Uninstall complete!"
 
 clean:
 	@rm -rf $(OBJ_DIR)
 	@rm -rf $(BIN_DIR)
+
+-include $(OBJS:.o=.d)
