@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/stat.h>
 #include "fileio.h"
 #include "config.h"
 #include "row.h"
@@ -61,7 +62,13 @@ char *editorRowsToString(int *buflen) {
     }
     *buflen = totlen;
 
-    char *buf = malloc(totlen);
+    char *buf = malloc(totlen ? totlen : 1);
+    if (buf == NULL) {
+        *buflen = 0;
+
+        return NULL;
+    }
+
     char *p = buf;
     
     for (int i = 0; i < CONFIG.numrows; i++) {
@@ -74,32 +81,94 @@ char *editorRowsToString(int *buflen) {
     return buf;
 }
 
+/*
+ * write to a sibling temp file then rename, for 2 rsns;
+ * a crash mid write cannot leave a truncated original, and later on we must
+ * never ftruncate a file we still have mapped, that is a SIGBUS waiting
+ */
+static int writeAtomic(const char *path, const char *buf, int len) {
+    size_t tmplen = strlen(path) + 8;
+    char *tmp = malloc(tmplen);
+    if (tmp == NULL) {
+        return -1;
+    }
+    snprintf(tmp, tmplen, "%s.nbtmp", path);
+
+    mode_t mode = 0644;
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        mode = st.st_mode & 07777;
+    }
+
+    int rc = -1;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fd == -1) {
+        goto done;
+    }
+
+    int off = 0;
+    while (off < len) {
+        ssize_t n = write(fd, buf + off, (size_t)(len - off));
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            goto close_fail;
+        }
+        off += (int)n;
+    }
+
+    if (fsync(fd) == -1) {
+        goto close_fail;
+    }
+    if (close(fd) == -1) {
+        fd = -1;
+        goto close_fail;
+    }
+    fd = -1;
+
+    if (rename(tmp, path) == -1) {
+        goto close_fail;
+    }
+    rc = 0;
+    goto done;
+
+close_fail:
+    if (fd != -1) {
+        close(fd);
+    }
+    unlink(tmp);
+done:
+    free(tmp);
+
+    return rc;
+}
+
 void editorSave(void) {
     if (CONFIG.filename == NULL) {
         CONFIG.filename = editorPrompt("Save as: %s", NULL);
         if (CONFIG.filename == NULL) {
             setStatusMessage("Save aborted");
+
             return;
         }
     }
 
     int len;
     char *buf = editorRowsToString(&len);
+    if (buf == NULL) {
+        setStatusMessage("Can't save! Out of memory");
 
-    int fd = open(CONFIG.filename, O_RDWR | O_CREAT, 0644);
-    if (fd != -1) {
-        if (ftruncate(fd, len) != -1) {
-            if (write(fd, buf, len) == len) {
-                close(fd);
-                free(buf);
-                CONFIG.dirty = 0;
-                setStatusMessage("%d bytes written to disk", len);
-                return;
-            }
-        }
-        close(fd);
+        return;
+    }
+
+    if (writeAtomic(CONFIG.filename, buf, len) == 0) {
+        CONFIG.dirty = 0;
+        setStatusMessage("%d bytes written to disk", len);
+    }
+    else {
+        setStatusMessage("Can't save! I/O error: %s", strerror(errno));
     }
 
     free(buf);
-    setStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
