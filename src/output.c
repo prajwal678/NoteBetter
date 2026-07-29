@@ -10,16 +10,62 @@
 #include "editor.h"
 
 
+static int digitsOf(int n) {
+    int d = 1;
+    while (n >= 10) {
+        n /= 10;
+        d++;
+    }
+
+    return d;
+}
+
+void editorUpdateGutter(void) {
+    int want = digitsOf(CONFIG.numrows > 0 ? CONFIG.numrows : 1) + 1;
+
+    // never let line numbers eat the text area on a narrow terminal
+    if (want > CONFIG.screen_columns / 2) {
+        want = 0;
+    }
+
+    CONFIG.gutter = want;
+    CONFIG.text_columns = CONFIG.screen_columns - want;
+    if (CONFIG.text_columns < 1) {
+        CONFIG.text_columns = 1;
+    }
+}
+
+// draw the line number, or a tilde past the end of the file
+static void drawGutter(APPEND_BUFFER *ab, int filerow) {
+    if (CONFIG.gutter == 0) {
+        return;
+    }
+
+    char buf[32];
+    int n;
+    appendBufferAppend(ab, "\x1b[90m", 5);
+    if (filerow >= CONFIG.numrows) {
+        n = snprintf(buf, sizeof(buf), "%*s ", CONFIG.gutter - 1, "~");
+    }
+    else {
+        n = snprintf(buf, sizeof(buf), "%*d ", CONFIG.gutter - 1, filerow + 1);
+    }
+    appendBufferAppend(ab, buf, n);
+    appendBufferAppend(ab, "\x1b[39m", 5);
+}
+
 void editorDrawRows(APPEND_BUFFER *ab) {
     for (int y = 0; y < CONFIG.screen_rows; y++) {
         int filerow = y + CONFIG.row_offset;
+        drawGutter(ab, filerow);
+
         if (filerow >= CONFIG.numrows) {
             if (CONFIG.numrows == 0 && y == CONFIG.screen_rows / 3) {
                 char welcome[80];
                 int welcomelen = snprintf(welcome, sizeof(welcome),
                     "NoteBetter editor -- version %s", NOTEBETTER_VERSION);
-                if (welcomelen > CONFIG.screen_columns) welcomelen = CONFIG.screen_columns;
-                int padding = (CONFIG.screen_columns - welcomelen) / 2;
+                if (welcomelen > CONFIG.text_columns) welcomelen = CONFIG.text_columns;
+                int padding = (CONFIG.text_columns - welcomelen) / 2;
                 if (padding) {
                     appendBufferAppend(ab, "-", 1);
                     padding--;
@@ -41,7 +87,7 @@ void editorDrawRows(APPEND_BUFFER *ab) {
             
             int len = CONFIG.row[filerow].render_size - CONFIG.column_offset;
             if (len < 0) len = 0;
-            if (len > CONFIG.screen_columns) len = CONFIG.screen_columns;
+            if (len > CONFIG.text_columns) len = CONFIG.text_columns;
             
             char *c = &CONFIG.row[filerow].render[CONFIG.column_offset];
             
@@ -112,6 +158,7 @@ void editorDrawMessageBar(APPEND_BUFFER *ab) {
 }
 
 void editorRefreshScreen(void) {
+    editorUpdateGutter();
     editorScroll();
 
     APPEND_BUFFER ab = ABUF_INIT;
@@ -126,7 +173,7 @@ void editorRefreshScreen(void) {
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH",
              (CONFIG.cursor_y - CONFIG.row_offset) + 1,
-             (CONFIG.render_x - CONFIG.column_offset) + 1);
+             (CONFIG.render_x - CONFIG.column_offset) + 1 + CONFIG.gutter);
     appendBufferAppend(&ab, buf, strlen(buf));
 
     appendBufferAppend(&ab, "\x1b[?25h", 6);

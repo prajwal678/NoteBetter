@@ -64,6 +64,8 @@ typedef struct EditorConfig {
     int column_offset;
     int screen_rows;
     int screen_columns;
+    int gutter;                 // line number column width, 0 if off
+    int text_columns;           // screen_columns minus the gutter
     int numrows;
     ROW_DATA *row;
     int dirty;

@@ -135,8 +135,9 @@ void editorScroll(void) {
     if (CONFIG.render_x < CONFIG.column_offset) {
         CONFIG.column_offset = CONFIG.render_x;
     }
-    if (CONFIG.render_x >= CONFIG.column_offset + CONFIG.screen_columns) {
-        CONFIG.column_offset = CONFIG.render_x - CONFIG.screen_columns + 1;
+    // the text area is the screen minus the line number gutter
+    if (CONFIG.render_x >= CONFIG.column_offset + CONFIG.text_columns) {
+        CONFIG.column_offset = CONFIG.render_x - CONFIG.text_columns + 1;
     }
 }
 
@@ -290,7 +291,8 @@ void initEditor(void) {
     
     if (getWindowSize(&CONFIG.screen_rows, &CONFIG.screen_columns) == -1)
         die("getWindowSize");
-    CONFIG.screen_rows -= 2; // indenting
+    CONFIG.screen_rows -= 2; // status bar + message bar
+    editorUpdateGutter();
     
     highlightThreadInit();
 }
