@@ -185,6 +185,17 @@ void editorMoveCursor(int key) {
     }
 }
 
+void editorResize(void) {
+    if (getWindowSize(&CONFIG.screen_rows, &CONFIG.screen_columns) == -1) {
+        return;
+    }
+    CONFIG.screen_rows -= 2;
+    if (CONFIG.screen_rows < 1) {
+        CONFIG.screen_rows = 1;
+    }
+    editorUpdateGutter();
+}
+
 void editorProcessKeypress(void) {
     static int quit_times = QUIT_TIMES;
     int c = editorReadKey();

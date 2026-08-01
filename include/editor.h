@@ -14,4 +14,7 @@ void editorMoveCursor(int key);
 void editorProcessKeypress(void);
 void initEditor(void);
 
+// re-read terminal size after SIGWINCH
+void editorResize(void);
+
 #endif
