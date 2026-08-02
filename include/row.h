@@ -5,7 +5,11 @@
 
 
 int editorRowCxToRx(ROW_DATA *row, int cx);
-int editorRowRxToCx(ROW_DATA *row, int rx);
+void editorRowEnsureRender(ROW_DATA *row);
+
+int rowMakeOwned(ROW_DATA *row);
+int editorReserveRows(int n);
+
 void updateRow(ROW_DATA *row);
 void editorInsertRow(int at, char *s, size_t len);
 void editorFreeRow(ROW_DATA *row);

@@ -7,6 +7,7 @@
 #include "config.h"
 #include "buffer.h"
 #include "highlight.h"
+#include "row.h"
 #include "editor.h"
 
 
@@ -55,6 +56,8 @@ static void drawGutter(APPEND_BUFFER *ab, int filerow) {
 }
 
 void editorDrawRows(APPEND_BUFFER *ab) {
+    editorSyntaxPrepare();
+
     for (int y = 0; y < CONFIG.screen_rows; y++) {
         int filerow = y + CONFIG.row_offset;
         drawGutter(ab, filerow);
@@ -78,13 +81,16 @@ void editorDrawRows(APPEND_BUFFER *ab) {
             }
         } 
         else {
-            if (CONFIG.row[filerow].render == NULL) {
-                appendBufferAppend(ab, "[NULL]", 6);
-                appendBufferAppend(ab, "\x1b[K", 3);
-                appendBufferAppend(ab, "\r\n", 2);
+            // render and colours are built the first time a row is drawn
+            ROW_DATA *row = &CONFIG.row[filerow];
+            editorRowEnsureRender(row);
+            editorHighlightRow(row);
+
+            if (row->render == NULL) {
+                appendBufferAppend(ab, "\x1b[K\r\n", 5);
                 continue;
             }
-            
+
             int len = CONFIG.row[filerow].render_size - CONFIG.column_offset;
             if (len < 0) len = 0;
             if (len > CONFIG.text_columns) len = CONFIG.text_columns;
@@ -92,8 +98,8 @@ void editorDrawRows(APPEND_BUFFER *ab) {
             char *c = &CONFIG.row[filerow].render[CONFIG.column_offset];
             
             unsigned char *hl = NULL;
-            if (CONFIG.row[filerow].hl != NULL) {
-                hl = &CONFIG.row[filerow].hl[CONFIG.column_offset];
+            if (row->hl != NULL && row->hl_valid) {
+                hl = &row->hl[CONFIG.column_offset];
             }
             
             int current_color = -1;

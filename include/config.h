@@ -3,6 +3,7 @@
 
 #include <termios.h>
 #include <time.h>
+#include <stddef.h>
 
 #define NOTEBETTER_VERSION "0.0.1"
 #define TAB_SPACE 4
@@ -51,10 +52,12 @@ typedef struct RowData {
     int index;
     int size;
     int render_size;
-    char *string;
-    char *render;
-    unsigned char *hl;
-    int hl_open_comment;
+    char *string;               // NOT nul terminated when owned == 0
+    char *render;               // always nul terminated, NULL until materialized
+    unsigned char *hl;          // NULL until coloured, length == render_size
+    int hl_open_comment;        // comment state AFTER this row
+    unsigned char owned;        // 1 = string is our malloc, 0 = slice of mmap
+    unsigned char hl_valid;     // hl matches current render
 } ROW_DATA;
 
 typedef struct EditorConfig {
@@ -67,9 +70,12 @@ typedef struct EditorConfig {
     int gutter;                 // line number column width, 0 if off
     int text_columns;           // screen_columns minus the gutter
     int numrows;
+    int rowcap;                 // allocated slots in row[]
     ROW_DATA *row;
     int dirty;
     char *filename;
+    char *map;                  // mmap base, NULL if the file was not mapped
+    size_t map_len;
     char status_message[80];
     time_t status_message_time;
     EDITOR_SYNTAX *syntax;

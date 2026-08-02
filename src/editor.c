@@ -6,6 +6,7 @@
 #include "terminal.h"
 #include "input.h"
 #include "output.h"
+#include "highlight.h"
 #include "fileio.h"
 #include "highlight_thread.h"
 
@@ -29,6 +30,9 @@ void editorInsertNewline(void) {
                        &row->string[CONFIG.cursor_x],
                        row->size - CONFIG.cursor_x);
         row = &CONFIG.row[CONFIG.cursor_y];
+        if (!rowMakeOwned(row)) {
+            return;
+        }
         row->size = CONFIG.cursor_x;
         row->string[row->size] = '\0';
         updateRow(row);
@@ -109,7 +113,8 @@ void editorFindCallback(char *query, int key) {
         }
 
         ROW_DATA *row = &CONFIG.row[current];
-        char *match = strstr(row->string, query);
+        // row->string is a slice of the mmap and has no nul, so memmem not strstr
+        char *match = memmem(row->string, (size_t)row->size, query, strlen(query));
         if (match) {
             last_match = current;
             CONFIG.cursor_y = current;

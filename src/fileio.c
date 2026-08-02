@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include "fileio.h"
 #include "config.h"
@@ -14,53 +15,153 @@
 #include "input.h"
 
 
+void editorCloseFile(void) {
+    for (int i = 0; i < CONFIG.numrows; i++) {
+        editorFreeRow(&CONFIG.row[i]);
+    }
+    free(CONFIG.row);
+    CONFIG.row = NULL;
+    CONFIG.numrows = 0;
+    CONFIG.rowcap = 0;
+
+    if (CONFIG.map != NULL) {
+        munmap(CONFIG.map, CONFIG.map_len);
+        CONFIG.map = NULL;
+        CONFIG.map_len = 0;
+    }
+
+    free(CONFIG.filename);
+    CONFIG.filename = NULL;
+}
+
+/*
+ * rows point straight into the mapping, no per line malloc
+ * a row only gets its own buffer when it is first edited (see rowMakeOwned)
+ * mapping stays alive for the whole session, editorCloseFile unmaps it
+ */
+static int loadMapped(const char *base, size_t len) {
+    if (len == 0) {
+        return 1;
+    }
+
+    // one pass to count lets us allocate the row array exactly once
+    int lines = 0;
+    const char *p = base;
+    const char *end = base + len;
+    while (p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        if (nl == NULL) {
+            break;
+        }
+        lines++;
+        p = nl + 1;
+    }
+    if (p < end) {
+        lines++;
+    }
+
+    if (!editorReserveRows(lines)) {
+        return 0;
+    }
+
+    int at = 0;
+    p = base;
+    while (p < end && at < lines) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        const char *stop = nl ? nl : end;
+
+        int n = (int)(stop - p);
+        if (n > 0 && p[n - 1] == '\r') {
+            n--;  // crlf
+        }
+
+        ROW_DATA *row = &CONFIG.row[at];
+        row->index = at;
+        row->size = n;
+        row->string = (char *)(size_t)p;  // borrowed, owned stays 0
+        row->owned = 0;
+        row->render = NULL;
+        row->render_size = 0;
+        row->hl = NULL;
+        row->hl_valid = 0;
+        row->hl_open_comment = 0;
+
+        at++;
+        if (nl == NULL) {
+            break;
+        }
+        p = nl + 1;
+    }
+
+    CONFIG.numrows = at;
+
+    return 1;
+}
+
 void editorOpen(char *filename) {
     if (filename == NULL) {
         setStatusMessage("No filename provided");
+
         return;
     }
-    
+
     free(CONFIG.filename);
     CONFIG.filename = strdup(filename);
-    
     if (CONFIG.filename == NULL) {
         setStatusMessage("Out of memory");
+
         return;
     }
 
-    FILE *fp = fopen(filename, "r");
-    if (!fp) {
-        // was dying fullu, now shows error and make empty file
-        setStatusMessage("Error opening file: %s", strerror(errno));
+    int fd = open(filename, O_RDONLY);
+    if (fd == -1) {
+        // pick a syntax so typing is coloured from teh start
+        setStatusMessage("New file: %s (%s)", filename, strerror(errno));
+
         return;
     }
 
-    char *line = NULL;
-    size_t linecap = 0;
-    ssize_t linelen;
+    struct stat st;
+    if (fstat(fd, &st) == -1 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        setStatusMessage("Not a regular file: %s", filename);
 
-    while ((linelen = getline(&line, &linecap, fp)) != -1) {
-        if (line == NULL) break;
-        
-        while (linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
-            linelen--;
-            
-        editorInsertRow(CONFIG.numrows, line, linelen);
+        return;
     }
 
-    free(line);
-    fclose(fp);
+    if (st.st_size > 0) {
+        void *map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (map == MAP_FAILED) {
+            close(fd);
+            setStatusMessage("Error mapping file: %s", strerror(errno));
+
+            return;
+        }
+        CONFIG.map = map;
+        CONFIG.map_len = (size_t)st.st_size;
+
+        // we read front to back once, then randomly as the user scrolls
+        madvise(map, CONFIG.map_len, MADV_WILLNEED);
+
+        if (!loadMapped(CONFIG.map, CONFIG.map_len)) {
+            setStatusMessage("Out of memory loading %s", filename);
+        }
+    }
+
+    close(fd);  // mapping keeps its own reference
     CONFIG.dirty = 0;
-    
+
     editorSelectSyntaxHighlight();
 }
 
+// caller frees; *buflen gets the byte count
 char *editorRowsToString(int *buflen) {
-    int totlen = 0;
+    size_t totlen = 0;
     for (int i = 0; i < CONFIG.numrows; i++) {
-        totlen += CONFIG.row[i].size + 1;
+        totlen += (size_t)CONFIG.row[i].size + 1;
     }
-    *buflen = totlen;
+
+    *buflen = (int)totlen;
 
     char *buf = malloc(totlen ? totlen : 1);
     if (buf == NULL) {
@@ -70,21 +171,19 @@ char *editorRowsToString(int *buflen) {
     }
 
     char *p = buf;
-    
     for (int i = 0; i < CONFIG.numrows; i++) {
-        memcpy(p, CONFIG.row[i].string, CONFIG.row[i].size);
+        memcpy(p, CONFIG.row[i].string, (size_t)CONFIG.row[i].size);
         p += CONFIG.row[i].size;
-        *p = '\n';
-        p++;
+        *p++ = '\n';
     }
 
     return buf;
 }
 
 /*
- * write to a sibling temp file then rename, for 2 rsns;
- * a crash mid write cannot leave a truncated original, and later on we must
- * never ftruncate a file we still have mapped, that is a SIGBUS waiting
+ * write to a sibling temp file then rename for 2 rsns
+ * crash mid write cannot leave a truncated original, and we must never
+ * ftruncate the file we still have mapped (that is a SIGBUS waiting to happen)
  */
 static int writeAtomic(const char *path, const char *buf, int len) {
     size_t tmplen = strlen(path) + 8;
