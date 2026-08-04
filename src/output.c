@@ -55,7 +55,7 @@ static void drawGutter(APPEND_BUFFER *ab, int filerow) {
     appendBufferAppend(ab, "\x1b[39m", 5);
 }
 
-void editorDrawRows(APPEND_BUFFER *ab) {
+static void editorDrawRows(APPEND_BUFFER *ab) {
     editorSyntaxPrepare();
 
     for (int y = 0; y < CONFIG.screen_rows; y++) {
@@ -102,25 +102,38 @@ void editorDrawRows(APPEND_BUFFER *ab) {
                 hl = &row->hl[CONFIG.column_offset];
             }
             
+            // worst case every char is its own run, 5 byte escape plus the char
+            appendBufferReserve(ab, len * 6 + 8);
+
             int current_color = -1;
-            for (int j = 0; j < len; j++) {
-                if (hl == NULL || hl[j] == HL_NORMAL) {
+            int j = 0;
+            while (j < len) {
+                unsigned char h = hl ? hl[j] : HL_NORMAL;
+
+                // one run of identical colour, one append, beats per char by ~10x
+                int k = j + 1;
+                while (k < len && (hl ? hl[k] : HL_NORMAL) == h) {
+                    k++;
+                }
+
+                if (h == HL_NORMAL) {
                     if (current_color != -1) {
                         appendBufferAppend(ab, "\x1b[39m", 5);
                         current_color = -1;
                     }
-                    appendBufferAppend(ab, &c[j], 1);
                 }
                 else {
-                    int color = editorSyntaxToColor(hl[j]);
+                    int color = editorSyntaxToColor(h);
                     if (color != current_color) {
                         current_color = color;
                         char buf[16];
                         int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
                         appendBufferAppend(ab, buf, clen);
                     }
-                    appendBufferAppend(ab, &c[j], 1);
                 }
+
+                appendBufferAppend(ab, &c[j], k - j);
+                j = k;
             }
             appendBufferAppend(ab, "\x1b[39m", 5);
         }
@@ -130,7 +143,7 @@ void editorDrawRows(APPEND_BUFFER *ab) {
     }
 }
 
-void editorDrawStatusBar(APPEND_BUFFER *ab) {
+static void editorDrawStatusBar(APPEND_BUFFER *ab) {
     appendBufferAppend(ab, "\x1b[7m", 4);
     char status[80], rstatus[80];
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
@@ -155,7 +168,7 @@ void editorDrawStatusBar(APPEND_BUFFER *ab) {
     appendBufferAppend(ab, "\r\n", 2);
 }
 
-void editorDrawMessageBar(APPEND_BUFFER *ab) {
+static void editorDrawMessageBar(APPEND_BUFFER *ab) {
     appendBufferAppend(ab, "\x1b[K", 3);
     int msglen = strlen(CONFIG.status_message);
     if (msglen > CONFIG.screen_columns) msglen = CONFIG.screen_columns;
@@ -167,10 +180,11 @@ void editorRefreshScreen(void) {
     editorUpdateGutter();
     editorScroll();
 
-    APPEND_BUFFER ab = ABUF_INIT;
+    // buffer survives between frames so a steady state redraw allocates nothing
+    static APPEND_BUFFER ab = ABUF_INIT;
+    ab.length = 0;
 
-    appendBufferAppend(&ab, "\x1b[?25l", 6);
-    appendBufferAppend(&ab, "\x1b[H", 3);
+    appendBufferAppend(&ab, "\x1b[?25l\x1b[H", 9);
 
     editorDrawRows(&ab);
     editorDrawStatusBar(&ab);
@@ -184,8 +198,8 @@ void editorRefreshScreen(void) {
 
     appendBufferAppend(&ab, "\x1b[?25h", 6);
 
-    write(STDOUT_FILENO, ab.buffer, ab.length);
-    appendBufferFree(&ab);
+    ssize_t ignored = write(STDOUT_FILENO, ab.buffer, (size_t)ab.length);
+    (void)ignored;
 }
 
 void setStatusMessage(const char *fmt, ...) {
