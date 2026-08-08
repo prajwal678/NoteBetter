@@ -485,17 +485,6 @@ void editorScanCommentChain(int from, int stop_when_stable) {
     }
 }
 
-// entry point for the background highlight worker; colours one row and fixes
-// the comment chain below it
-void editorUpdateSyntax(ROW_DATA *row) {
-    if (row == NULL) {
-        return;
-    }
-    editorScanCommentChain(row->index, 1);
-    editorRowEnsureRender(row);
-    editorHighlightRow(row);
-}
-
 int editorSyntaxToColor(int hl) {
     switch (hl) {
         case HL_COMMENT:

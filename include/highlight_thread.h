@@ -6,7 +6,9 @@
 
 void highlightThreadInit(void);
 void highlightThreadShutdown(void);
-void highlightThreadQueueRow(ROW_DATA *row);
-void highlightThreadProcess(void);
+// block until worker is parked; must be called before touching any row
+void highlightThreadPause(void);
+// hand the worker a row range and let it run
+void highlightThreadResume(int lo, int hi);
 
-#endif 
+#endif

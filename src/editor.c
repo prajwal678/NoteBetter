@@ -190,6 +190,11 @@ void editorMoveCursor(int key) {
     }
 }
 
+void editorCleanup(void) {
+    highlightThreadShutdown();   // first, nothing else may touch rows after
+    editorCloseFile();
+}
+
 void editorResize(void) {
     if (getWindowSize(&CONFIG.screen_rows, &CONFIG.screen_columns) == -1) {
         return;
@@ -218,17 +223,9 @@ void editorProcessKeypress(void) {
                 return;
             }
             
-            /* Perform cleanup before exit */
-            /* Re-enable thread shutdown */
-            highlightThreadShutdown();
-            
-            /* Clear screen before exit */
-            write(STDOUT_FILENO, "\x1b[2J", 4);
-            write(STDOUT_FILENO, "\x1b[H", 3);
-            
-            /* Reset terminal mode */
+            editorCleanup();
+            write(STDOUT_FILENO, "\x1b[2J\x1b[H", 7);
             disableRawMode();
-            
             exit(0);
             break;
 

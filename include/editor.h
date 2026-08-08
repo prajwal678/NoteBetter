@@ -14,6 +14,9 @@ void editorMoveCursor(int key);
 void editorProcessKeypress(void);
 void initEditor(void);
 
+// stop the worker, then release rows and the mapping, safe to call once
+void editorCleanup(void);
+
 // re-read terminal size after SIGWINCH
 void editorResize(void);
 

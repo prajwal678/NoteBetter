@@ -8,9 +8,6 @@ void editorHighlightRow(ROW_DATA *row);
 void editorScanCommentChain(int from, int stop_when_stable);
 void editorScanCommentChainAll(void);
 
-// full colour of one row incl chain fixup, used by the background worker
-void editorUpdateSyntax(ROW_DATA *row);
-
 int editorSyntaxToColor(int hl);
 void editorSelectSyntaxHighlight(void);
 void editorSyntaxPrepare(void);

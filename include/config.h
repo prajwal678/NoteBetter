@@ -10,6 +10,9 @@
 #define QUIT_TIMES 2
 #define CTRL_KEY(x) ((x) & 0x1f)
 
+// rows outside the viewport the background thread colours ahead of time
+#define PREFETCH_ROWS 512
+
 
 enum EditorKey {
     BACKSPACE = 127,

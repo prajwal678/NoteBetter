@@ -1,151 +1,134 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "highlight_thread.h"
 #include "highlight.h"
+#include "row.h"
 #include "config.h"
 
-#define MAX_QUEUE_SIZE 128 // rando pows of 2
-
-
-typedef struct {
-    ROW_DATA *row;
-    int is_processed;
-} HighlightTask;
 
 static struct {
     pthread_t thread;
-    pthread_mutex_t queue_mutex;
-    pthread_cond_t queue_cond;
-    pthread_cond_t process_cond;
+    pthread_mutex_t m;
+    pthread_cond_t work_cv;  // main to worker; range waiting
+    pthread_cond_t idle_cv;  // worker to main; parked
     int running;
-    
-    HighlightTask queue[MAX_QUEUE_SIZE];
-    int queue_size;
-    int queue_head;
-    int queue_tail;
-} ThreadState;
+    int have_work;
+    int active;  // worker is inside the row loop
+    int lo, hi;
+    int started;
+    atomic_int pause;  // checked per row so pause is quick
+} PF;
 
-static int queueTask(ROW_DATA *row) {
-    if ((ThreadState.queue_tail + 1) % MAX_QUEUE_SIZE == ThreadState.queue_head) {
-        return 0;
-    }
-    
-    HighlightTask task = { row, 0 };
-    ThreadState.queue[ThreadState.queue_tail] = task;
-    ThreadState.queue_tail = (ThreadState.queue_tail + 1) % MAX_QUEUE_SIZE;
-    ThreadState.queue_size++;
-    
-    return 1;
-}
-
-static HighlightTask *getTask(void) {
-    if (ThreadState.queue_head == ThreadState.queue_tail) {
-        return NULL;
-    }
-    
-    HighlightTask *task = &ThreadState.queue[ThreadState.queue_head];
-    return task;
-}
-
-static void removeTask(void) {
-    if (ThreadState.queue_head == ThreadState.queue_tail) {
-        return;
-    }
-    
-    ThreadState.queue_head = (ThreadState.queue_head + 1) % MAX_QUEUE_SIZE;
-    ThreadState.queue_size--;
-}
-
-static void *highlightThreadFunc(void *arg) {
+static void *prefetchThread(void *arg) {
     (void)arg;
-    
-    while (1) {
-        pthread_mutex_lock(&ThreadState.queue_mutex);
-        
-        while (ThreadState.queue_head == ThreadState.queue_tail && ThreadState.running) {
-            pthread_cond_wait(&ThreadState.queue_cond, &ThreadState.queue_mutex);
+
+    for (;;) {
+        pthread_mutex_lock(&PF.m);
+        while (PF.running && !PF.have_work) {
+            pthread_cond_wait(&PF.work_cv, &PF.m);
         }
-        
-        if (!ThreadState.running && ThreadState.queue_head == ThreadState.queue_tail) {
-            pthread_mutex_unlock(&ThreadState.queue_mutex);
+        if (!PF.running) {
+            pthread_mutex_unlock(&PF.m);
             break;
         }
-        
-        HighlightTask *task = getTask();
-        if (task == NULL) {
-            pthread_mutex_unlock(&ThreadState.queue_mutex);
-            continue;
+
+        int lo = PF.lo;
+        int hi = PF.hi;
+        PF.have_work = 0;
+        PF.active = 1;
+        pthread_mutex_unlock(&PF.m);
+
+        // rows are stable here; main is blocked in read() and will call
+        for (int i = lo; i <= hi; i++) {
+            if (atomic_load_explicit(&PF.pause, memory_order_relaxed)) {
+                break;
+            }
+            if (i < 0 || i >= CONFIG.numrows) {
+                continue;
+            }
+
+            ROW_DATA *row = &CONFIG.row[i];
+            editorRowEnsureRender(row);
+            editorHighlightRow(row);
         }
-        
-        pthread_mutex_unlock(&ThreadState.queue_mutex);
-        
-        if (task->row && CONFIG.syntax) {
-            editorUpdateSyntax(task->row);
-        }
-        
-        pthread_mutex_lock(&ThreadState.queue_mutex);
-        task->is_processed = 1;
-        pthread_cond_signal(&ThreadState.process_cond);
-        pthread_mutex_unlock(&ThreadState.queue_mutex);
+
+        pthread_mutex_lock(&PF.m);
+        PF.active = 0;
+        pthread_cond_broadcast(&PF.idle_cv);
+        pthread_mutex_unlock(&PF.m);
     }
-    
+
     return NULL;
 }
 
 void highlightThreadInit(void) {
-    memset(&ThreadState, 0, sizeof(ThreadState));
-    
-    pthread_mutex_init(&ThreadState.queue_mutex, NULL);
-    pthread_cond_init(&ThreadState.queue_cond, NULL);
-    pthread_cond_init(&ThreadState.process_cond, NULL);
-    
-    ThreadState.running = 1;
-    ThreadState.queue_head = 0;
-    ThreadState.queue_tail = 0;
-    ThreadState.queue_size = 0;
-    
-    pthread_create(&ThreadState.thread, NULL, highlightThreadFunc, NULL);
+    if (PF.started) {
+        return;
+    }
+
+    memset(&PF, 0, sizeof(PF));
+    pthread_mutex_init(&PF.m, NULL);
+    pthread_cond_init(&PF.work_cv, NULL);
+    pthread_cond_init(&PF.idle_cv, NULL);
+    atomic_init(&PF.pause, 1);
+    PF.running = 1;
+
+    if (pthread_create(&PF.thread, NULL, prefetchThread, NULL) != 0) {
+        PF.running = 0;
+
+        return;
+    }
+    PF.started = 1;
+}
+
+void highlightThreadPause(void) {
+    if (!PF.started) {
+        return;
+    }
+
+    atomic_store_explicit(&PF.pause, 1, memory_order_relaxed);
+
+    pthread_mutex_lock(&PF.m);
+    PF.have_work = 0;
+    while (PF.active) {
+        pthread_cond_wait(&PF.idle_cv, &PF.m);
+    }
+    pthread_mutex_unlock(&PF.m);
+}
+
+void highlightThreadResume(int lo, int hi) {
+    if (!PF.started || lo > hi) {
+        return;
+    }
+
+    pthread_mutex_lock(&PF.m);
+    PF.lo = lo;
+    PF.hi = hi;
+    PF.have_work = 1;
+    atomic_store_explicit(&PF.pause, 0, memory_order_relaxed);
+    pthread_cond_signal(&PF.work_cv);
+    pthread_mutex_unlock(&PF.m);
 }
 
 void highlightThreadShutdown(void) {
-    pthread_mutex_lock(&ThreadState.queue_mutex);
-    ThreadState.running = 0;
-    pthread_cond_signal(&ThreadState.queue_cond);
-    pthread_mutex_unlock(&ThreadState.queue_mutex);
-    
-    pthread_join(ThreadState.thread, NULL);
-    
-    pthread_mutex_destroy(&ThreadState.queue_mutex);
-    pthread_cond_destroy(&ThreadState.queue_cond);
-    pthread_cond_destroy(&ThreadState.process_cond);
-}
-
-void highlightThreadQueueRow(ROW_DATA *row) {
-    if (row == NULL || CONFIG.syntax == NULL) return;
-    
-    pthread_mutex_lock(&ThreadState.queue_mutex);
-    
-    if (queueTask(row)) {
-        pthread_cond_signal(&ThreadState.queue_cond);
+    if (!PF.started) {
+        return;
     }
-    
-    pthread_mutex_unlock(&ThreadState.queue_mutex);
-}
+    PF.started = 0;
 
-void highlightThreadProcess(void) {
-    pthread_mutex_lock(&ThreadState.queue_mutex);
-    
-    while (ThreadState.queue_head != ThreadState.queue_tail) {
-        HighlightTask *task = getTask();
-        
-        if (task && task->is_processed) {
-            removeTask();
-        }
-        else {
-            break;
-        }
-    }
-    
-    pthread_mutex_unlock(&ThreadState.queue_mutex);
-} 
+    atomic_store_explicit(&PF.pause, 1, memory_order_relaxed);
+
+    pthread_mutex_lock(&PF.m);
+    PF.running = 0;
+    PF.have_work = 0;
+    pthread_cond_broadcast(&PF.work_cv);
+    pthread_mutex_unlock(&PF.m);
+
+    pthread_join(PF.thread, NULL);
+
+    pthread_mutex_destroy(&PF.m);
+    pthread_cond_destroy(&PF.work_cv);
+    pthread_cond_destroy(&PF.idle_cv);
+}

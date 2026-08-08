@@ -7,6 +7,7 @@
 #include "config.h"
 #include "buffer.h"
 #include "highlight.h"
+#include "highlight_thread.h"
 #include "row.h"
 #include "editor.h"
 
@@ -180,6 +181,15 @@ void editorRefreshScreen(void) {
     editorUpdateGutter();
     editorScroll();
 
+    /*
+     * park the worker before we touch a single row; editorReadKey also pauses,
+     * but relying on the caller to have done it is a trap: any code path that
+     * draws twice without a keypress in between would race the prefetcher on
+     * viewport rows, so pausing here makes it local;
+     * costs nothing when already parked
+     */
+    highlightThreadPause();
+
     // buffer survives between frames so a steady state redraw allocates nothing
     static APPEND_BUFFER ab = ABUF_INIT;
     ab.length = 0;
@@ -200,6 +210,18 @@ void editorRefreshScreen(void) {
 
     ssize_t ignored = write(STDOUT_FILENO, ab.buffer, (size_t)ab.length);
     (void)ignored;
+
+    // hand the idle window to the prefetcher, it colours rows around the
+    // viewport until the next keypress parks it
+    int lo = CONFIG.row_offset - PREFETCH_ROWS;
+    int hi = CONFIG.row_offset + CONFIG.screen_rows + PREFETCH_ROWS;
+    if (lo < 0) {
+        lo = 0;
+    }
+    if (hi >= CONFIG.numrows) {
+        hi = CONFIG.numrows - 1;
+    }
+    highlightThreadResume(lo, hi);
 }
 
 void setStatusMessage(const char *fmt, ...) {

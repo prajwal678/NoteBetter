@@ -51,8 +51,6 @@ int main(int argc, char *argv[]) {
     setStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
 
     for (;;) {
-        highlightThreadProcess();
-
         if (nb_winch_pending) {
             nb_winch_pending = 0;
             editorResize();

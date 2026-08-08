@@ -8,6 +8,7 @@
 #include "config.h"
 #include "terminal.h"
 #include "output.h"
+#include "highlight_thread.h"
 
 
 int editorReadKey(void) {
@@ -17,17 +18,26 @@ int editorReadKey(void) {
     while ((nread = (int)read(STDIN_FILENO, &c, 1)) != 1) {
         // stdin closed; without this the loop spins forever on EOF
         if (nread == 0) {
+            highlightThreadPause();
+
             return CTRL_KEY('q');
         }
         if (nread == -1 && errno == EINTR) {
             // a signal (SIGWINCH) cut the read short; hand back the noop
             // refresh key so the main loop repaints instead of hanging
+            highlightThreadPause();
+
             return CTRL_KEY('l');
         }
         if (nread == -1 && errno != EAGAIN) {
             die("read");
         }
     }
+
+    // single choke point: a key arrived, so the caller is about to mutate rows;
+    // park the prefetcher here and every caller is covered without having to
+    // remember, editorRefreshScreen restarts it
+    highlightThreadPause();
 
     if (c != '\x1b') {
         return c;
