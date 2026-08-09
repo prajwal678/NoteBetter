@@ -11,6 +11,19 @@
 #include "row.h"
 #include "editor.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+
+typedef struct {
+    char *buf;
+    int len;
+    int cap;
+} ROW_SLAB;
+
+static ROW_SLAB *slabs;
+static int slab_count;
 
 static int digitsOf(int n) {
     int d = 1;
@@ -37,115 +50,206 @@ void editorUpdateGutter(void) {
     }
 }
 
-// draw the line number, or a tilde past the end of the file
-static void drawGutter(APPEND_BUFFER *ab, int filerow) {
-    if (CONFIG.gutter == 0) {
+static int slabReserve(ROW_SLAB *s, int need) {
+    if (need <= s->cap) {
+        return 1;
+    }
+
+    int cap = s->cap ? s->cap : 256;
+    while (cap < need) {
+        cap *= 2;
+    }
+
+    char *tmp = realloc(s->buf, (size_t)cap);
+    if (tmp == NULL) {
+        return 0;
+    }
+
+    s->buf = tmp;
+    s->cap = cap;
+
+    return 1;
+}
+
+static void slabPut(ROW_SLAB *s, const char *p, int n) {
+    if (n <= 0 || !slabReserve(s, s->len + n)) {
+        return;
+    }
+    memcpy(&s->buf[s->len], p, (size_t)n);
+    s->len += n;
+}
+
+static void ensureSlabs(int n) {
+    if (n <= slab_count) {
         return;
     }
 
-    char buf[32];
-    int n;
-    appendBufferAppend(ab, "\x1b[90m", 5);
+    ROW_SLAB *tmp = realloc(slabs, sizeof(ROW_SLAB) * (size_t)n);
+    if (tmp == NULL) {
+        return;
+    }
+
+    memset(&tmp[slab_count], 0, sizeof(ROW_SLAB) * (size_t)(n - slab_count));
+    slabs = tmp;
+    slab_count = n;
+}
+
+static void freeSlabs(void) {
+    for (int i = 0; i < slab_count; i++) {
+        free(slabs[i].buf);
+    }
+    free(slabs);
+    slabs = NULL;
+    slab_count = 0;
+}
+
+static void buildRowSlab(ROW_SLAB *s, int filerow) {
+    char tmp[64];
+    s->len = 0;
+
     if (filerow >= CONFIG.numrows) {
-        n = snprintf(buf, sizeof(buf), "%*s ", CONFIG.gutter - 1, "~");
+        if (CONFIG.gutter) {
+            slabPut(s, "\x1b[90m", 5);
+            int n = snprintf(tmp, sizeof(tmp), "%*s ", CONFIG.gutter - 1, "~");
+            slabPut(s, tmp, n);
+            slabPut(s, "\x1b[39m", 5);
+        }
+        slabPut(s, "-", 1);
+        slabPut(s, "\x1b[K\r\n", 5);
+
+        return;
     }
-    else {
-        n = snprintf(buf, sizeof(buf), "%*d ", CONFIG.gutter - 1, filerow + 1);
+
+    ROW_DATA *row = &CONFIG.row[filerow];
+
+    if (CONFIG.gutter) {
+        slabPut(s, "\x1b[90m", 5);
+        int n = snprintf(tmp, sizeof(tmp), "%*d ", CONFIG.gutter - 1, filerow + 1);
+        slabPut(s, tmp, n);
+        slabPut(s, "\x1b[39m", 5);
     }
-    appendBufferAppend(ab, buf, n);
-    appendBufferAppend(ab, "\x1b[39m", 5);
+
+    int len = row->render_size - CONFIG.column_offset;
+    if (len < 0) {
+        len = 0;
+    }
+    if (len > CONFIG.text_columns) {
+        len = CONFIG.text_columns;
+    }
+
+    if (len > 0 && row->render != NULL) {
+        slabReserve(s, s->len + len * 6 + 8);
+
+        char *c = &row->render[CONFIG.column_offset];
+        unsigned char *hl = (row->hl && row->hl_valid) ? &row->hl[CONFIG.column_offset] : NULL;
+
+        int current_color = -1;
+        int j = 0;
+        while (j < len) {
+            unsigned char h = hl ? hl[j] : HL_NORMAL;
+
+            // one run of identical colour, one append, beats per char by ~10x
+            int k = j + 1;
+            while (k < len && (hl ? hl[k] : HL_NORMAL) == h) {
+                k++;
+            }
+
+            if (h == HL_NORMAL) {
+                if (current_color != -1) {
+                    slabPut(s, "\x1b[39m", 5);
+                    current_color = -1;
+                }
+            }
+            else {
+                int color = editorSyntaxToColor(h);
+                if (color != current_color) {
+                    current_color = color;
+                    int n = snprintf(tmp, sizeof(tmp), "\x1b[%dm", color);
+                    slabPut(s, tmp, n);
+                }
+            }
+
+            slabPut(s, &c[j], k - j);
+            j = k;
+        }
+        slabPut(s, "\x1b[39m", 5);
+    }
+
+    slabPut(s, "\x1b[K\r\n", 5);
 }
 
 static void editorDrawRows(APPEND_BUFFER *ab) {
+    int rows = CONFIG.screen_rows;
+    ensureSlabs(rows);
+    if (slab_count < rows) {
+        return;
+    }
+
     editorSyntaxPrepare();
 
-    for (int y = 0; y < CONFIG.screen_rows; y++) {
+#ifdef _OPENMP
+    int work = 0;
+    for (int y = 0; y < rows; y++) {
         int filerow = y + CONFIG.row_offset;
-        drawGutter(ab, filerow);
-
         if (filerow >= CONFIG.numrows) {
-            if (CONFIG.numrows == 0 && y == CONFIG.screen_rows / 3) {
-                char welcome[80];
-                int welcomelen = snprintf(welcome, sizeof(welcome),
-                    "NoteBetter editor -- version %s", NOTEBETTER_VERSION);
-                if (welcomelen > CONFIG.text_columns) welcomelen = CONFIG.text_columns;
-                int padding = (CONFIG.text_columns - welcomelen) / 2;
-                if (padding) {
-                    appendBufferAppend(ab, "-", 1);
-                    padding--;
-                }
-                while (padding--) appendBufferAppend(ab, " ", 1);
-                appendBufferAppend(ab, welcome, welcomelen);
-            }
-            else {
-                appendBufferAppend(ab, "-", 1);
-            }
-        } 
-        else {
-            // render and colours are built the first time a row is drawn
+            break;
+        }
+        ROW_DATA *row = &CONFIG.row[filerow];
+        if (row->render == NULL || !row->hl_valid) {
+            work += row->size;
+        }
+    }
+#endif
+
+    // the colour + render fan out, safe because main is blocked inside this
+    // region and the prefetch thread is parked, so nothing mutates rows
+    // each iteration owns exactly one row, iterations never overlap
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static) if (work >= 32768 && rows >= 32)
+#endif
+    for (int y = 0; y < rows; y++) {
+        int filerow = y + CONFIG.row_offset;
+        if (filerow < CONFIG.numrows) {
             ROW_DATA *row = &CONFIG.row[filerow];
             editorRowEnsureRender(row);
             editorHighlightRow(row);
+        }
+        buildRowSlab(&slabs[y], filerow);
+    }
 
-            if (row->render == NULL) {
-                appendBufferAppend(ab, "\x1b[K\r\n", 5);
-                continue;
-            }
-
-            int len = CONFIG.row[filerow].render_size - CONFIG.column_offset;
-            if (len < 0) len = 0;
-            if (len > CONFIG.text_columns) len = CONFIG.text_columns;
-            
-            char *c = &CONFIG.row[filerow].render[CONFIG.column_offset];
-            
-            unsigned char *hl = NULL;
-            if (row->hl != NULL && row->hl_valid) {
-                hl = &row->hl[CONFIG.column_offset];
-            }
-            
-            // worst case every char is its own run, 5 byte escape plus the char
-            appendBufferReserve(ab, len * 6 + 8);
-
-            int current_color = -1;
-            int j = 0;
-            while (j < len) {
-                unsigned char h = hl ? hl[j] : HL_NORMAL;
-
-                // one run of identical colour, one append, beats per char by ~10x
-                int k = j + 1;
-                while (k < len && (hl ? hl[k] : HL_NORMAL) == h) {
-                    k++;
-                }
-
-                if (h == HL_NORMAL) {
-                    if (current_color != -1) {
-                        appendBufferAppend(ab, "\x1b[39m", 5);
-                        current_color = -1;
-                    }
-                }
-                else {
-                    int color = editorSyntaxToColor(h);
-                    if (color != current_color) {
-                        current_color = color;
-                        char buf[16];
-                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
-                        appendBufferAppend(ab, buf, clen);
-                    }
-                }
-
-                appendBufferAppend(ab, &c[j], k - j);
-                j = k;
-            }
-            appendBufferAppend(ab, "\x1b[39m", 5);
+    if (CONFIG.numrows == 0 && rows > 0) {
+        int y = rows / 3;
+        char welcome[80];
+        int welcomelen = snprintf(welcome, sizeof(welcome),
+            "NoteBetter editor -- version %s", NOTEBETTER_VERSION);
+        if (welcomelen > CONFIG.text_columns) {
+            welcomelen = CONFIG.text_columns;
         }
 
-        appendBufferAppend(ab, "\x1b[K", 3);
-        appendBufferAppend(ab, "\r\n", 2);
+        ROW_SLAB *s = &slabs[y];
+        s->len = 0;
+        int padding = (CONFIG.text_columns - welcomelen) / 2;
+        if (padding) { slabPut(s, "-", 1); padding--; }
+        while (padding--) {
+            slabPut(s, " ", 1);
+        }
+        slabPut(s, welcome, welcomelen);
+        slabPut(s, "\x1b[K\r\n", 5);
+    }
+
+    int total = 0;
+    for (int y = 0; y < rows; y++) {
+        total += slabs[y].len;
+    }
+    appendBufferReserve(ab, total);
+    for (int y = 0; y < rows; y++) {
+        appendBufferAppend(ab, slabs[y].buf, slabs[y].len);
     }
 }
 
 static void editorDrawStatusBar(APPEND_BUFFER *ab) {
     appendBufferAppend(ab, "\x1b[7m", 4);
+
     char status[80], rstatus[80];
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
         CONFIG.filename ? CONFIG.filename : "[No Name]", CONFIG.numrows,
@@ -153,47 +257,51 @@ static void editorDrawStatusBar(APPEND_BUFFER *ab) {
     int rlen = snprintf(rstatus, sizeof(rstatus), "%s | %d/%d",
         CONFIG.syntax ? CONFIG.syntax->filetype : "no ft",
         CONFIG.cursor_y + 1, CONFIG.numrows);
-    if (len > CONFIG.screen_columns) len = CONFIG.screen_columns;
+
+    if (len > CONFIG.screen_columns) {
+        len = CONFIG.screen_columns;
+    }
     appendBufferAppend(ab, status, len);
+
     while (len < CONFIG.screen_columns) {
         if (CONFIG.screen_columns - len == rlen) {
             appendBufferAppend(ab, rstatus, rlen);
             break;
         }
-        else {
-            appendBufferAppend(ab, " ", 1);
-            len++;
-        }
+        appendBufferAppend(ab, " ", 1);
+        len++;
     }
-    appendBufferAppend(ab, "\x1b[m", 3);
-    appendBufferAppend(ab, "\r\n", 2);
+
+    appendBufferAppend(ab, "\x1b[m\r\n", 5);
 }
 
 static void editorDrawMessageBar(APPEND_BUFFER *ab) {
     appendBufferAppend(ab, "\x1b[K", 3);
-    int msglen = strlen(CONFIG.status_message);
-    if (msglen > CONFIG.screen_columns) msglen = CONFIG.screen_columns;
-    if (msglen && time(NULL) - CONFIG.status_message_time < 5)
+
+    int msglen = (int)strlen(CONFIG.status_message);
+    if (msglen > CONFIG.screen_columns) {
+        msglen = CONFIG.screen_columns;
+    }
+    if (msglen && time(NULL) - CONFIG.status_message_time < 5) {
         appendBufferAppend(ab, CONFIG.status_message, msglen);
+    }
 }
 
 void editorRefreshScreen(void) {
+    // buffer survives between frames so steady state redraw allocates nothing
+    static APPEND_BUFFER ab = ABUF_INIT;
+
+    // park the worker before we touch a single row, editorReadKey also pauses,
+    // but relying on the caller to have done it is a trap: any code path that
+    // draws twice without a keypress in between would race the prefetcher on
+    // viewport rows, tsan caught exactly that, pausing here makes it local
+    // costs nothing when already parked
+    highlightThreadPause();
+
     editorUpdateGutter();
     editorScroll();
 
-    /*
-     * park the worker before we touch a single row; editorReadKey also pauses,
-     * but relying on the caller to have done it is a trap: any code path that
-     * draws twice without a keypress in between would race the prefetcher on
-     * viewport rows, so pausing here makes it local;
-     * costs nothing when already parked
-     */
-    highlightThreadPause();
-
-    // buffer survives between frames so a steady state redraw allocates nothing
-    static APPEND_BUFFER ab = ABUF_INIT;
     ab.length = 0;
-
     appendBufferAppend(&ab, "\x1b[?25l\x1b[H", 9);
 
     editorDrawRows(&ab);
@@ -201,11 +309,10 @@ void editorRefreshScreen(void) {
     editorDrawMessageBar(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH",
+    int n = snprintf(buf, sizeof(buf), "\x1b[%d;%dH",
              (CONFIG.cursor_y - CONFIG.row_offset) + 1,
              (CONFIG.render_x - CONFIG.column_offset) + 1 + CONFIG.gutter);
-    appendBufferAppend(&ab, buf, strlen(buf));
-
+    appendBufferAppend(&ab, buf, n);
     appendBufferAppend(&ab, "\x1b[?25h", 6);
 
     ssize_t ignored = write(STDOUT_FILENO, ab.buffer, (size_t)ab.length);
@@ -222,6 +329,10 @@ void editorRefreshScreen(void) {
         hi = CONFIG.numrows - 1;
     }
     highlightThreadResume(lo, hi);
+}
+
+void editorFreeOutput(void) {
+    freeSlabs();
 }
 
 void setStatusMessage(const char *fmt, ...) {

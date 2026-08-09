@@ -193,6 +193,7 @@ void editorMoveCursor(int key) {
 void editorCleanup(void) {
     highlightThreadShutdown();   // first, nothing else may touch rows after
     editorCloseFile();
+    editorFreeOutput();
 }
 
 void editorResize(void) {

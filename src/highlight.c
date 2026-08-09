@@ -5,6 +5,10 @@
 #include "row.h"
 #include "config.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 static EDITOR_SYNTAX HLDB[] = {
     {
         "c",
@@ -437,6 +441,17 @@ static void chainWriteRange(int lo, int hi, int state) {
     }
 }
 
+#ifdef _OPENMP
+// same walk but only the end state, nothing written
+static int chainEndState(int lo, int hi, int state) {
+    for (int i = lo; i < hi; i++) {
+        state = scanRowState(CONFIG.row[i].string, CONFIG.row[i].size, state);
+    }
+
+    return state;
+}
+#endif
+
 /*
  * it looks strictly sequential (row N needs row N-1), so to use more than one core we guess instead;
  * split into chunks and scan every chunk from BOTH possible start states at once
@@ -457,6 +472,65 @@ void editorScanCommentChainAll(void) {
     }
 
     editorSyntaxPrepare();
+
+#ifdef _OPENMP
+    int nchunks = omp_get_max_threads();
+    if (nchunks > 64) {
+        nchunks = 64;
+    }
+
+    // below this the fork/join costs more than the scan
+    if (nchunks > 1 && n >= 8192) {
+        int chunk = (n + nchunks - 1) / nchunks;
+        int *end0 = malloc(sizeof(int) * (size_t)nchunks);
+        int *end1 = malloc(sizeof(int) * (size_t)nchunks);
+        int *start = malloc(sizeof(int) * (size_t)nchunks);
+
+        if (end0 != NULL && end1 != NULL && start != NULL) {
+            #pragma omp parallel for schedule(static)
+            for (int c = 0; c < nchunks; c++) {
+                int lo = c * chunk;
+                int hi = lo + chunk;
+                if (lo > n) {
+                    lo = n;
+                }
+                if (hi > n) {
+                    hi = n;
+                }
+                end0[c] = chainEndState(lo, hi, 0);
+                end1[c] = chainEndState(lo, hi, 1);
+            }
+
+            // pick the branch that actually happened, chunk by chunk
+            start[0] = 0;
+            for (int c = 1; c < nchunks; c++) {
+                start[c] = start[c - 1] ? end1[c - 1] : end0[c - 1];
+            }
+
+            #pragma omp parallel for schedule(static)
+            for (int c = 0; c < nchunks; c++) {
+                int lo = c * chunk;
+                int hi = lo + chunk;
+                if (lo > n) {
+                    lo = n;
+                }
+                if (hi > n) {
+                    hi = n;
+                }
+                chainWriteRange(lo, hi, start[c]);
+            }
+
+            free(end0);
+            free(end1);
+            free(start);
+
+            return;
+        }
+        free(end0);
+        free(end1);
+        free(start);
+    }
+#endif
 
     chainWriteRange(0, n, 0);
 }
