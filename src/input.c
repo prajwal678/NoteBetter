@@ -34,9 +34,8 @@ int editorReadKey(void) {
         }
     }
 
-    // single choke point: a key arrived, so the caller is about to mutate rows;
-    // park the prefetcher here and every caller is covered without having to
-    // remember, editorRefreshScreen restarts it
+    // single choke point: a key arrived, so the caller is about to mutate rows
+    // park the prefetcher here and every caller is covered without having to remember and editorRefreshScreen restarts it
     highlightThreadPause();
 
     if (c != '\x1b') {

@@ -6,8 +6,8 @@
 #include "terminal.h"
 #include "input.h"
 #include "output.h"
-#include "highlight.h"
 #include "fileio.h"
+#include "highlight.h"
 #include "highlight_thread.h"
 
 
@@ -15,9 +15,12 @@ void editorInsertChar(int c) {
     if (CONFIG.cursor_y == CONFIG.numrows) {
         editorInsertRow(CONFIG.numrows, "", 0);
     }
+    if (CONFIG.cursor_y >= CONFIG.numrows) {
+        return;
+    }
+
     rowInsertChar(&CONFIG.row[CONFIG.cursor_y], CONFIG.cursor_x, c);
     CONFIG.cursor_x++;
-    CONFIG.dirty++;
 }
 
 void editorInsertNewline(void) {
@@ -26,9 +29,9 @@ void editorInsertNewline(void) {
     }
     else {
         ROW_DATA *row = &CONFIG.row[CONFIG.cursor_y];
-        editorInsertRow(CONFIG.cursor_y + 1, 
-                       &row->string[CONFIG.cursor_x],
-                       row->size - CONFIG.cursor_x);
+        // s points into row->string, not into CONFIG.row, so the realloc inside editorInsertRow cannot invalidate it
+        editorInsertRow(CONFIG.cursor_y + 1, &row->string[CONFIG.cursor_x], (size_t)(row->size - CONFIG.cursor_x));
+
         row = &CONFIG.row[CONFIG.cursor_y];
         if (!rowMakeOwned(row)) {
             return;
@@ -42,8 +45,12 @@ void editorInsertNewline(void) {
 }
 
 void editorDelChar(void) {
-    if (CONFIG.cursor_y == CONFIG.numrows) return;
-    if (CONFIG.cursor_x == 0 && CONFIG.cursor_y == 0) return;
+    if (CONFIG.cursor_y == CONFIG.numrows) {
+        return;
+    }
+    if (CONFIG.cursor_x == 0 && CONFIG.cursor_y == 0) {
+        return;
+    }
 
     ROW_DATA *row = &CONFIG.row[CONFIG.cursor_y];
     if (CONFIG.cursor_x > 0) {
@@ -52,13 +59,107 @@ void editorDelChar(void) {
     }
     else {
         CONFIG.cursor_x = CONFIG.row[CONFIG.cursor_y - 1].size;
-        rowAppendString(&CONFIG.row[CONFIG.cursor_y - 1],
-                       row->string,
-                       row->size);
+        rowAppendString(&CONFIG.row[CONFIG.cursor_y - 1], row->string, (size_t)row->size);
         editorDelRow(CONFIG.cursor_y);
         CONFIG.cursor_y--;
     }
-    CONFIG.dirty++;
+}
+
+static int saved_hl_line = -1;
+static unsigned char *saved_hl;
+
+static void restoreSearchHighlight(void) {
+    if (saved_hl == NULL) {
+        return;
+    }
+
+    if (saved_hl_line >= 0 && saved_hl_line < CONFIG.numrows) {
+        ROW_DATA *row = &CONFIG.row[saved_hl_line];
+        if (row->hl != NULL && row->render_size > 0) {
+            memcpy(row->hl, saved_hl, (size_t)row->render_size);
+        }
+    }
+
+    free(saved_hl);
+    saved_hl = NULL;
+    saved_hl_line = -1;
+}
+
+void editorFindCallback(char *query, int key) {
+    static int last_match = -1;
+    static int direction = 1;
+
+    restoreSearchHighlight();
+
+    if (key == '\r' || key == '\x1b') {
+        last_match = -1;
+        direction = 1;
+
+        return;
+    }
+    else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
+        direction = 1;
+    }
+    else if (key == ARROW_LEFT || key == ARROW_UP) {
+        direction = -1;
+    }
+    else {
+        last_match = -1;
+        direction = 1;
+    }
+
+    size_t qlen = strlen(query);
+    if (qlen == 0) {
+        return;
+    }
+    if (last_match == -1) {
+        direction = 1;
+    }
+
+    int current = last_match;
+
+    for (int i = 0; i < CONFIG.numrows; i++) {
+        current += direction;
+        if (current == -1) {
+            current = CONFIG.numrows - 1;
+        }
+        else if (current == CONFIG.numrows) {
+            current = 0;
+        }
+
+        ROW_DATA *row = &CONFIG.row[current];
+        // row->string is a slice of the mmap and has no nul, so memmem not strstr
+        char *match = memmem(row->string, (size_t)row->size, query, qlen);
+        if (match == NULL) {
+            continue;
+        }
+
+        last_match = current;
+        CONFIG.cursor_y = current;
+        CONFIG.cursor_x = (int)(match - row->string);
+        CONFIG.row_offset = CONFIG.numrows;  // force scroll to put hit on screen
+
+        editorRowEnsureRender(row);
+        editorHighlightRow(row);
+
+        if (row->hl != NULL && row->render_size > 0) {
+            saved_hl = malloc((size_t)row->render_size);
+            if (saved_hl != NULL) {
+                memcpy(saved_hl, row->hl, (size_t)row->render_size);
+                saved_hl_line = current;
+
+                int rx = editorRowCxToRx(row, CONFIG.cursor_x);
+                int n = (int)qlen;
+                if (rx + n > row->render_size) {
+                    n = row->render_size - rx;
+                }
+                if (n > 0) {
+                    memset(&row->hl[rx], HL_MATCH, (size_t)n);
+                }
+            }
+        }
+        break;
+    }
 }
 
 void editorFind(void) {
@@ -78,51 +179,7 @@ void editorFind(void) {
         CONFIG.column_offset = saved_coloff;
         CONFIG.row_offset = saved_rowoff;
     }
-}
-
-void editorFindCallback(char *query, int key) {
-    static int last_match = -1;
-    static int direction = 1;
-
-    if (key == '\r' || key == '\x1b') {
-        last_match = -1;
-        direction = 1;
-        return;
-    }
-    else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
-        direction = 1;
-    }
-    else if (key == ARROW_LEFT || key == ARROW_UP) {
-        direction = -1;
-    }
-    else {
-        last_match = -1;
-        direction = 1;
-    }
-
-    if (last_match == -1) direction = 1;
-    int current = last_match;
-
-    for (int i = 0; i < CONFIG.numrows; i++) {
-        current += direction;
-        if (current == -1) {
-            current = CONFIG.numrows - 1;
-        }
-        else if (current == CONFIG.numrows) {
-            current = 0;
-        }
-
-        ROW_DATA *row = &CONFIG.row[current];
-        // row->string is a slice of the mmap and has no nul, so memmem not strstr
-        char *match = memmem(row->string, (size_t)row->size, query, strlen(query));
-        if (match) {
-            last_match = current;
-            CONFIG.cursor_y = current;
-            CONFIG.cursor_x = match - row->string;
-            CONFIG.row_offset = CONFIG.numrows;
-            break;
-        }
-    }
+    restoreSearchHighlight();
 }
 
 void editorScroll(void) {
@@ -140,9 +197,14 @@ void editorScroll(void) {
     if (CONFIG.render_x < CONFIG.column_offset) {
         CONFIG.column_offset = CONFIG.render_x;
     }
-    // the text area is the screen minus the line number gutter
     if (CONFIG.render_x >= CONFIG.column_offset + CONFIG.text_columns) {
         CONFIG.column_offset = CONFIG.render_x - CONFIG.text_columns + 1;
+    }
+    if (CONFIG.row_offset < 0) {
+        CONFIG.row_offset = 0;
+    }
+    if (CONFIG.column_offset < 0) {
+        CONFIG.column_offset = 0;
     }
 }
 
@@ -190,12 +252,6 @@ void editorMoveCursor(int key) {
     }
 }
 
-void editorCleanup(void) {
-    highlightThreadShutdown();   // first, nothing else may touch rows after
-    editorCloseFile();
-    editorFreeOutput();
-}
-
 void editorResize(void) {
     if (getWindowSize(&CONFIG.screen_rows, &CONFIG.screen_columns) == -1) {
         return;
@@ -205,6 +261,12 @@ void editorResize(void) {
         CONFIG.screen_rows = 1;
     }
     editorUpdateGutter();
+}
+
+void editorCleanup(void) {
+    highlightThreadShutdown();  // first so nothing else may touch it later
+    editorCloseFile();
+    editorFreeOutput();
 }
 
 void editorProcessKeypress(void) {
@@ -221,9 +283,10 @@ void editorProcessKeypress(void) {
                 setStatusMessage("WARNING!!! File has unsaved changes. "
                     "Press Ctrl-Q %d more times to quit.", quit_times);
                 quit_times--;
+
                 return;
             }
-            
+
             editorCleanup();
             write(STDOUT_FILENO, "\x1b[2J\x1b[H", 7);
             disableRawMode();
@@ -242,14 +305,17 @@ void editorProcessKeypress(void) {
             CONFIG.cursor_x = 0;
             break;
         case END_KEY:
-            if (CONFIG.cursor_y < CONFIG.numrows)
+            if (CONFIG.cursor_y < CONFIG.numrows) {
                 CONFIG.cursor_x = CONFIG.row[CONFIG.cursor_y].size;
+            }
             break;
 
         case BACKSPACE:
         case CTRL_KEY('h'):
         case DELETE_KEY:
-            if (c == DELETE_KEY) editorMoveCursor(ARROW_RIGHT);
+            if (c == DELETE_KEY) {
+                editorMoveCursor(ARROW_RIGHT);
+            }
             editorDelChar();
             break;
 
@@ -259,14 +325,17 @@ void editorProcessKeypress(void) {
                 if (c == PAGE_UP) {
                     CONFIG.cursor_y = CONFIG.row_offset;
                 }
-                else if (c == PAGE_DOWN) {
+                else {
                     CONFIG.cursor_y = CONFIG.row_offset + CONFIG.screen_rows - 1;
-                    if (CONFIG.cursor_y > CONFIG.numrows) CONFIG.cursor_y = CONFIG.numrows;
+                    if (CONFIG.cursor_y > CONFIG.numrows) {
+                        CONFIG.cursor_y = CONFIG.numrows;
+                    }
                 }
 
                 int times = CONFIG.screen_rows;
-                while (times--)
+                while (times--) {
                     editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+                }
             }
             break;
 
@@ -296,17 +365,21 @@ void initEditor(void) {
     CONFIG.row_offset = 0;
     CONFIG.column_offset = 0;
     CONFIG.numrows = 0;
+    CONFIG.rowcap = 0;
     CONFIG.row = NULL;
     CONFIG.dirty = 0;
     CONFIG.filename = NULL;
+    CONFIG.map = NULL;
+    CONFIG.map_len = 0;
     CONFIG.status_message[0] = '\0';
     CONFIG.status_message_time = 0;
     CONFIG.syntax = NULL;
-    
-    if (getWindowSize(&CONFIG.screen_rows, &CONFIG.screen_columns) == -1)
+
+    if (getWindowSize(&CONFIG.screen_rows, &CONFIG.screen_columns) == -1) {
         die("getWindowSize");
+    }
     CONFIG.screen_rows -= 2; // status bar + message bar
     editorUpdateGutter();
-    
+
     highlightThreadInit();
 }

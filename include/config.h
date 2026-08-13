@@ -10,7 +10,7 @@
 #define QUIT_TIMES 2
 #define CTRL_KEY(x) ((x) & 0x1f)
 
-// rows outside the viewport the background thread colours ahead of time
+// rows outside viewport the background thread colours ahead of time; can go bonkers if ya got the compute
 #define PREFETCH_ROWS 512
 
 
@@ -55,12 +55,12 @@ typedef struct RowData {
     int index;
     int size;
     int render_size;
-    char *string;               // NOT nul terminated when owned == 0
-    char *render;               // always nul terminated, NULL until materialized
-    unsigned char *hl;          // NULL until coloured, length == render_size
-    int hl_open_comment;        // comment state AFTER this row
-    unsigned char owned;        // 1 = string is our malloc, 0 = slice of mmap
-    unsigned char hl_valid;     // hl matches current render
+    char *string;  // NOT nul terminated when owned == 0
+    char *render;  // always null terminated, NULL until materialized
+    unsigned char *hl;  // NULL until coloured, length == render_size
+    int hl_open_comment;  // comment state AFTER this row
+    unsigned char owned;  // 1 = string is our malloc, 0 = slice of mmap
+    unsigned char hl_valid;  // hl matches current render
 } ROW_DATA;
 
 typedef struct EditorConfig {
@@ -70,14 +70,14 @@ typedef struct EditorConfig {
     int column_offset;
     int screen_rows;
     int screen_columns;
-    int gutter;                 // line number column width, 0 if off
-    int text_columns;           // screen_columns minus the gutter
+    int gutter;  // line number column width, 0 if off
+    int text_columns;  // screen_columns - gutter
     int numrows;
-    int rowcap;                 // allocated slots in row[]
+    int rowcap;  // allocated slots in row[]
     ROW_DATA *row;
     int dirty;
     char *filename;
-    char *map;                  // mmap base, NULL if the file was not mapped
+    char *map;  // mmap base, NULL if file was not mapped
     size_t map_len;
     char status_message[80];
     time_t status_message_time;

@@ -13,11 +13,9 @@ void editorScroll(void);
 void editorMoveCursor(int key);
 void editorProcessKeypress(void);
 void initEditor(void);
-
-// stop the worker, then release rows and the mapping, safe to call once
+// stop the worker, then release rows, mmap and slabs
 void editorCleanup(void);
-
-// re-read terminal size after SIGWINCH
+// reread terminal size after SIGWINCH
 void editorResize(void);
 
 #endif

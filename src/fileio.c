@@ -117,6 +117,7 @@ void editorOpen(char *filename) {
     if (fd == -1) {
         // pick a syntax so typing is coloured from teh start
         setStatusMessage("New file: %s (%s)", filename, strerror(errno));
+        editorSelectSyntaxHighlight();
 
         return;
     }
@@ -125,6 +126,7 @@ void editorOpen(char *filename) {
     if (fstat(fd, &st) == -1 || !S_ISREG(st.st_mode)) {
         close(fd);
         setStatusMessage("Not a regular file: %s", filename);
+        editorSelectSyntaxHighlight();
 
         return;
     }
@@ -134,6 +136,7 @@ void editorOpen(char *filename) {
         if (map == MAP_FAILED) {
             close(fd);
             setStatusMessage("Error mapping file: %s", strerror(errno));
+            editorSelectSyntaxHighlight();
 
             return;
         }
@@ -251,6 +254,7 @@ void editorSave(void) {
 
             return;
         }
+        editorSelectSyntaxHighlight();
     }
 
     int len;
