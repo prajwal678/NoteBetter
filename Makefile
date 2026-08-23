@@ -1,54 +1,69 @@
-CC ?= gcc
 OPT ?= -O2
+BUILD ?= release
+INSTALL_DIR ?= /usr/local/bin
+CORPUS_LINES ?= 1000000
 
 # gcc takes -fopenmp direct, apple clang needs brew libomp, none means the pragmas compile away
 OMP := $(shell echo 'int main(void){return 0;}' | $(CC) -fopenmp -x c - -o /dev/null 2>/dev/null && echo native || { [ -f /opt/homebrew/opt/libomp/include/omp.h ] && echo brew || echo none; })
 OMP_CFLAGS  = $(if $(filter brew,$(OMP)),-Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include,$(if $(filter native,$(OMP)),-fopenmp))
 OMP_LDFLAGS = $(if $(filter brew,$(OMP)),-L/opt/homebrew/opt/libomp/lib -lomp,$(if $(filter native,$(OMP)),-fopenmp))
 
-CFLAGS = -std=c11 -Wall -Wextra -I./include $(OPT) -MMD -MP -pthread -D_DEFAULT_SOURCE -D_GNU_SOURCE -D_DARWIN_C_SOURCE $(OMP_CFLAGS)
-LDFLAGS = -pthread $(OMP_LDFLAGS)
+CFLAGS  = -std=c11 -Wall -Wextra -I./include $(OPT) -MMD -MP -pthread -D_DEFAULT_SOURCE -D_GNU_SOURCE -D_DARWIN_C_SOURCE $(OMP_CFLAGS) $(EXTRA_CFLAGS)
+LDFLAGS = -pthread $(OMP_LDFLAGS) $(EXTRA_LDFLAGS)
 
-SRC_DIR = src
-OBJ_DIR = obj
-BIN_DIR = bin
-INSTALL_DIR ?= /usr/local/bin
+OBJ_DIR = obj/$(BUILD)
+OBJS = $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(wildcard src/*.c))
+LIB_OBJS = $(filter-out $(OBJ_DIR)/main.o,$(OBJS))
+CORPUS = bin/corpus$(CORPUS_LINES).c
 
-BINARY = notebetter
-TARGET = $(BIN_DIR)/$(BINARY)
+# non release builds get a suffix, else `make asan` clobbers bin/bench and the next `make bench` measures an instrumented build
+S = $(if $(filter release,$(BUILD)),,-$(BUILD))
 
-SRCS = $(wildcard $(SRC_DIR)/*.c)
-OBJS = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+.PHONY: all clean install uninstall config test bench tsan asan
 
-.PHONY: all clean directories install uninstall config
-
-all: directories $(TARGET)
+all: bin/notebetter
 
 config:
-	@echo "CC=$(CC)  OPT=$(OPT)  OpenMP=$(OMP)"
+	@echo "CC=$(CC)  OPT=$(OPT)  OpenMP=$(OMP)  BUILD=$(BUILD)"
 
-directories:
-	@mkdir -p $(OBJ_DIR)
-	@mkdir -p $(BIN_DIR)
-
-$(TARGET): $(OBJS)
+bin/notebetter: $(OBJS)
+	@mkdir -p bin
 	$(CC) $(OBJS) $(LDFLAGS) -o $@
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | directories
+$(OBJ_DIR)/%.o: src/%.c
+	@mkdir -p $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-install: $(TARGET)
-	@echo "Installing $(BINARY) to $(INSTALL_DIR)"
-	@install -m 755 $(TARGET) $(INSTALL_DIR)/$(BINARY)
-	@echo "Installation complete! You can now run '$(BINARY)' from anywhere."
+# test and bench bring their own main, so they link everything but main.o
+bin/test$(S): tests/test.c $(LIB_OBJS)
+	@mkdir -p bin
+	$(CC) $(CFLAGS) $< $(LIB_OBJS) $(LDFLAGS) -o $@
+
+bin/bench$(S): bench/bench.c $(LIB_OBJS)
+	@mkdir -p bin
+	$(CC) $(CFLAGS) $< $(LIB_OBJS) $(LDFLAGS) -o $@
+
+test: bin/test$(S)
+	@bin/test$(S)
+
+bench: bin/bench$(S)
+	@[ -f $(CORPUS) ] || bin/bench$(S) --gen $(CORPUS_LINES) $(CORPUS)
+	@bin/bench$(S) $(CORPUS) 200
+
+# cc because gcc has no working sanitizers on arm64 macos; OMP=none because libomp is uninstrumented, so tsan cannot see its barriers and calls every shared read either side of one a race
+tsan:
+	@$(MAKE) CC=cc BUILD=tsan OMP=none CORPUS_LINES=200000 EXTRA_CFLAGS="-fsanitize=thread -g -O1" EXTRA_LDFLAGS="-fsanitize=thread" test bench
+
+asan:
+	@$(MAKE) CC=cc BUILD=asan CORPUS_LINES=200000 EXTRA_CFLAGS="-fsanitize=address,undefined -g -O1" EXTRA_LDFLAGS="-fsanitize=address,undefined" test bench
+
+install: all
+	install -m 755 bin/notebetter $(INSTALL_DIR)/notebetter
 
 uninstall:
-	@echo "Removing $(BINARY) from $(INSTALL_DIR)"
-	@rm -f $(INSTALL_DIR)/$(BINARY)
-	@echo "Uninstall complete!"
+	rm -f $(INSTALL_DIR)/notebetter
 
 clean:
-	@rm -rf $(OBJ_DIR)
-	@rm -rf $(BIN_DIR)
+	rm -rf obj bin
 
 -include $(OBJS:.o=.d)
