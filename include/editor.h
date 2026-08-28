@@ -11,6 +11,12 @@ void editorFindCallback(char *query, int key);
 void editorFind(void);
 void editorScroll(void);
 void editorMoveCursor(int key);
+void editorMoveWord(int dir);
+void editorScrollHalfPage(int dir);
+void editorYankLine(void);
+void editorCutLine(void);
+void editorPasteLine(void);
+void editorFreeYank(void);
 void editorProcessKeypress(void);
 void initEditor(void);
 // stop the worker, then release rows, mmap and slabs

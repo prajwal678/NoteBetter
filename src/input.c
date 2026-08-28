@@ -27,7 +27,7 @@ int editorReadKey(void) {
             // refresh key so the main loop repaints instead of hanging
             highlightThreadPause();
 
-            return CTRL_KEY('l');
+            return REFRESH_KEY;
         }
         if (nread == -1 && errno != EAGAIN) {
             die("read");

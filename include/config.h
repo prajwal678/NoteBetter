@@ -24,7 +24,8 @@ enum EditorKey {
     HOME_KEY,
     END_KEY,
     PAGE_UP,
-    PAGE_DOWN
+    PAGE_DOWN,
+    REFRESH_KEY // repaint only, never moves the cursor
 };
 
 enum EditorHighlight {

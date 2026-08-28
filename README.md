@@ -55,18 +55,28 @@ make clean
 - `Ctrl-S`: Save file
 - `Ctrl-Q`: Quit (will warn if unsaved changes exist)
 - `Ctrl-F`: Find text in file (matches are highlighted; Arrows cycle hits, Enter keeps, Esc cancels)
-- `Ctrl-H` or `Backspace`: Delete character before cursor
-- `Delete`: Delete character under cursor
-- `Ctrl-L`: Redraw screen
-- `Arrow Keys`: Move cursor
+
+### Movement
+
+Vim-like but Ctrl-prefixed (this aint modal dawg)
+- `Ctrl-H/J/K/L` -> Left / down / up / right
+- `Ctrl-A/E` -> Start / end of line
+- `Ctrl-B/W` -> Start of previous / next word
+- `Ctrl-T/G` -> First / last line of file
+- `Ctrl-D/U` -> Half a screen down / up, view on cursor sticky
+- Arrow keys still let you navigate
 - `Page Up/Down`: Scroll page up/down
 - `Home/End`: Move to start/end of line
+
+### Editing
+- `Ctrl-C/X/V`
 
 ## Features
 
 - Syntax highlighting for C, C++, and Python files
 - Line numbers
 - Search (Ctrl-F) with the current match highlighted
+- Vim-like Ctrl-prefixed motions, half-screen scroll, and a linewise copy/cut/paste register
 - Status bar with filename, line count, modified flag, detected filetype and cursor line
 - Multi-line editing support
 - Atomic saves — writes a temp file and renames, so an interrupted save cannot truncate your file
@@ -77,13 +87,12 @@ make clean
 ## Development
 
 ```bash
-make test       # 249 assertion checks
-make tsan       # ThreadSanitizer build + run
-make asan       # AddressSanitizer + UBSan build + run
+make test
+make bench      # build + run the benchmark, generates a 1M line corpus first
+make tsan       # ThreadSanitizer build + run of both test and bench
+make asan       # AddressSanitizer + UBSan build + run of both test and bench
+make config     # to see compiler, openmp config
 ```
-
-Sanitizer builds produce `bin/bench-tsan` / `bin/bench-asan`, separate from the
-release `bin/bench`
 
 ---
 

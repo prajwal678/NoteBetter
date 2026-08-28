@@ -1,7 +1,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
 #include "editor.h"
+#include "buffer.h"
 #include "row.h"
 #include "terminal.h"
 #include "input.h"
@@ -252,6 +254,167 @@ void editorMoveCursor(int key) {
     }
 }
 
+static int isWordChar(int c) {
+    return (c != -1 && (isalnum(c) || c == '_'));
+}
+
+static int charAt(void) {
+    ROW_DATA *row = &CONFIG.row[CONFIG.cursor_y];
+
+    return ((CONFIG.cursor_x < row->size) ? (unsigned char)row->string[CONFIG.cursor_x] : -1);
+}
+
+// one byte forward or back, crossing line ends; 0 if there is nowhere left to go; never leaves cursor_y == numrows, so charAt is always in range
+static int stepChar(int dir) {
+    if (dir > 0) {
+        if (CONFIG.cursor_x < CONFIG.row[CONFIG.cursor_y].size) {
+            CONFIG.cursor_x++;
+
+            return 1;
+        }
+        if (CONFIG.cursor_y + 1 < CONFIG.numrows) {
+            CONFIG.cursor_y++;
+            CONFIG.cursor_x = 0;
+
+            return 1;
+        }
+
+        return 0;
+    }
+
+    if (CONFIG.cursor_x > 0) {
+        CONFIG.cursor_x--;
+
+        return 1;
+    }
+    if (CONFIG.cursor_y > 0) {
+        CONFIG.cursor_y--;
+        CONFIG.cursor_x = CONFIG.row[CONFIG.cursor_y].size;
+
+        return 1;
+    }
+
+    return 0;
+}
+
+// dir > 0: start of the next word, dir < 0: start of the previous word
+void editorMoveWord(int dir) {
+    if (CONFIG.numrows == 0) {
+        return;
+    }
+    if (CONFIG.cursor_y >= CONFIG.numrows) {
+        CONFIG.cursor_y = CONFIG.numrows - 1;
+    }
+
+    int c = charAt();
+    if (dir > 0) {
+        // out of the word we are standing in, then across the gap
+        while (isWordChar(c) && stepChar(1)) {
+            c = charAt();
+        }
+        while (!isWordChar(c) && stepChar(1)) {
+            c = charAt();
+        }
+
+        return;
+    }
+
+    if (!stepChar(-1)) {
+        return;
+    }
+    c = charAt();
+    while (!isWordChar(c) && stepChar(-1)) {
+        c = charAt();
+    }
+
+    ROW_DATA *row = &CONFIG.row[CONFIG.cursor_y];
+    while (CONFIG.cursor_x > 0 && isWordChar((unsigned char)row->string[CONFIG.cursor_x - 1])) {
+        CONFIG.cursor_x--;
+    }
+}
+
+void editorScrollHalfPage(int dir) {
+    int half = CONFIG.screen_rows / 2;
+    if (half < 1) {
+        half = 1;  // screen_rows floors at 1, see editorResize
+    }
+
+    int last = CONFIG.numrows ? CONFIG.numrows - 1 : 0;
+
+    CONFIG.cursor_y += dir * half;
+    if (CONFIG.cursor_y > last) {
+        CONFIG.cursor_y = last;
+    }
+    if (CONFIG.cursor_y < 0) {
+        CONFIG.cursor_y = 0;
+    }
+
+    CONFIG.row_offset += dir * half;
+    if (CONFIG.row_offset > last) {
+        CONFIG.row_offset = last;
+    }
+    if (CONFIG.row_offset < 0) {
+        CONFIG.row_offset = 0;
+    }
+
+    int rowlen = (CONFIG.cursor_y < CONFIG.numrows) ? CONFIG.row[CONFIG.cursor_y].size : 0;
+    if (CONFIG.cursor_x > rowlen) {
+        CONFIG.cursor_x = rowlen;
+    }
+}
+
+static APPEND_BUFFER yank_register = ABUF_INIT;
+// appendBufferAppend is a no-op for len 0, so yanking an empty line leaves buffer NULL; this flag is what separates that from never having yanked
+static int yank_valid;
+
+void editorYankLine(void) {
+    if (CONFIG.cursor_y >= CONFIG.numrows) {
+        return;
+    }
+
+    ROW_DATA *row = &CONFIG.row[CONFIG.cursor_y];
+    yank_register.length = 0;
+    appendBufferAppend(&yank_register, row->string, row->size);
+    yank_valid = 1;
+
+    setStatusMessage("1 line yanked");
+}
+
+void editorCutLine(void) {
+    if (CONFIG.cursor_y >= CONFIG.numrows) {
+        return;
+    }
+
+    editorYankLine();  // copies first, editorDelRow frees row->string
+    editorDelRow(CONFIG.cursor_y);
+
+    if (CONFIG.cursor_y >= CONFIG.numrows) {
+        CONFIG.cursor_y = CONFIG.numrows ? CONFIG.numrows - 1 : 0;
+    }
+    int rowlen = (CONFIG.cursor_y < CONFIG.numrows) ? CONFIG.row[CONFIG.cursor_y].size : 0;
+    if (CONFIG.cursor_x > rowlen) {
+        CONFIG.cursor_x = rowlen;
+    }
+
+    setStatusMessage("1 line katt");
+}
+
+void editorPasteLine(void) {
+    if (!yank_valid) {
+        return;
+    }
+
+    int at = (CONFIG.cursor_y >= CONFIG.numrows) ? CONFIG.numrows : CONFIG.cursor_y + 1;
+    editorInsertRow(at, yank_register.buffer ? yank_register.buffer : "", (size_t)yank_register.length); // editorInsertRow memcpys len bytes and memcpy from NULL is undefined even for a length of 0
+    CONFIG.cursor_y = at;
+    CONFIG.cursor_x = 0;
+}
+
+void editorFreeYank(void) {
+    appendBufferFree(&yank_register);
+    yank_valid = 0;
+}
+
 void editorResize(void) {
     if (getWindowSize(&CONFIG.screen_rows, &CONFIG.screen_columns) == -1) {
         return;
@@ -267,6 +430,7 @@ void editorCleanup(void) {
     highlightThreadShutdown();  // first so nothing else may touch it later
     editorCloseFile();
     editorFreeOutput();
+    editorFreeYank();
 }
 
 void editorProcessKeypress(void) {
@@ -302,16 +466,50 @@ void editorProcessKeypress(void) {
             break;
 
         case HOME_KEY:
+        case CTRL_KEY('a'):
             CONFIG.cursor_x = 0;
             break;
         case END_KEY:
+        case CTRL_KEY('e'):
             if (CONFIG.cursor_y < CONFIG.numrows) {
                 CONFIG.cursor_x = CONFIG.row[CONFIG.cursor_y].size;
             }
             break;
 
+        case CTRL_KEY('w'):
+            editorMoveWord(1);
+            break;
+        case CTRL_KEY('b'):
+            editorMoveWord(-1);
+            break;
+
+        case CTRL_KEY('t'):
+            CONFIG.cursor_y = 0;
+            CONFIG.cursor_x = 0;
+            break;
+        case CTRL_KEY('g'):
+            CONFIG.cursor_y = CONFIG.numrows ? CONFIG.numrows - 1 : 0;
+            CONFIG.cursor_x = 0;
+            break;
+
+        case CTRL_KEY('d'):
+            editorScrollHalfPage(1);
+            break;
+        case CTRL_KEY('u'):
+            editorScrollHalfPage(-1);
+            break;
+
+        case CTRL_KEY('c'):
+            editorYankLine();
+            break;
+        case CTRL_KEY('x'):
+            editorCutLine();
+            break;
+        case CTRL_KEY('v'):
+            editorPasteLine();
+            break;
+
         case BACKSPACE:
-        case CTRL_KEY('h'):
         case DELETE_KEY:
             if (c == DELETE_KEY) {
                 editorMoveCursor(ARROW_RIGHT);
@@ -346,7 +544,20 @@ void editorProcessKeypress(void) {
             editorMoveCursor(c);
             break;
 
+        case CTRL_KEY('k'):
+            editorMoveCursor(ARROW_UP);
+            break;
+        case CTRL_KEY('j'):
+            editorMoveCursor(ARROW_DOWN);
+            break;
+        case CTRL_KEY('h'):
+            editorMoveCursor(ARROW_LEFT);
+            break;
         case CTRL_KEY('l'):
+            editorMoveCursor(ARROW_RIGHT);
+            break;
+
+        case REFRESH_KEY:
         case '\x1b':
             break;
 

@@ -525,6 +525,179 @@ static void testSave(void) {
     CHECK(access(tmp, F_OK) != 0, "save: temp file left behind");
 }
 
+// motions, half page scroll, linewise register
+
+static void checkCursor(int line, int wy, int wx, const char *what) {
+    checkAt(CONFIG.cursor_y == wy && CONFIG.cursor_x == wx, line,
+            "%s: cursor %d,%d want %d,%d", what, CONFIG.cursor_y, CONFIG.cursor_x, wy, wx);
+}
+
+#define CHECK_CURSOR(wy, wx, what) checkCursor(__LINE__, (wy), (wx), (what))
+
+static void testWordMotion(void) {
+    // 0: foo.bar baz_1  qux   1: int x = 42;   2: empty   3: spaces   4: last
+    static const char text[] = "foo.bar baz_1  qux\nint x = 42;\n\n   \nlast\n";
+
+    resetEditor();
+    editorOpen(writeTmp("motions.c", text, sizeof(text) - 1));
+    CHECK(CONFIG.numrows == 5, "word: rows %d want 5", CONFIG.numrows);
+
+    // punctuation is skipped, not a word of its own; _ and digits are word bytes
+    CONFIG.cursor_y = 0; CONFIG.cursor_x = 0;
+    editorMoveWord(1);  CHECK_CURSOR(0, 4,  "fwd to bar");
+    editorMoveWord(1);  CHECK_CURSOR(0, 8,  "fwd to baz_1");
+    editorMoveWord(1);  CHECK_CURSOR(0, 15, "fwd to qux");
+    editorMoveWord(1);  CHECK_CURSOR(1, 0,  "fwd across line end");
+
+    CONFIG.cursor_y = 2; CONFIG.cursor_x = 0;
+    editorMoveWord(1);  CHECK_CURSOR(4, 0, "fwd over blank lines");
+
+    editorMoveWord(1);  CHECK_CURSOR(4, 4, "fwd stops at eof");
+    editorMoveWord(1);  CHECK_CURSOR(4, 4, "fwd idempotent at eof");
+
+    // lands on the first byte of the word, not its last
+    CONFIG.cursor_y = 1; CONFIG.cursor_x = 0;
+    editorMoveWord(-1); CHECK_CURSOR(0, 15, "back across line start");
+    CONFIG.cursor_y = 0; CONFIG.cursor_x = 4;
+    editorMoveWord(-1); CHECK_CURSOR(0, 0,  "back over punctuation");
+    editorMoveWord(-1); CHECK_CURSOR(0, 0,  "back stops at bof");
+
+    CONFIG.cursor_y = 3; CONFIG.cursor_x = 0;
+    editorMoveWord(-1); CHECK_CURSOR(1, 8, "back over blank lines");
+
+    // cursor_y == numrows is legal, walking from it must not read past row[]
+    CONFIG.cursor_y = CONFIG.numrows; CONFIG.cursor_x = 0;
+    editorMoveWord(1);
+    CHECK(CONFIG.cursor_y < CONFIG.numrows, "word: past eof cursor_y %d", CONFIG.cursor_y);
+
+    resetEditor();
+    CONFIG.cursor_y = 0; CONFIG.cursor_x = 0;
+    editorMoveWord(1);
+    editorMoveWord(-1);
+    CHECK_CURSOR(0, 0, "word on empty buffer");
+}
+
+static void testHalfPageScroll(void) {
+    char big[100 * 40];
+    int n = 0;
+    for (int i = 0; i < 100; i++) {
+        if (i == 0) {
+            n += snprintf(big + n, sizeof(big) - (size_t)n, "%-30s\n", "wide");
+        }
+        else if (i == 12) {
+            n += snprintf(big + n, sizeof(big) - (size_t)n, "abc\n");
+        }
+        else {
+            n += snprintf(big + n, sizeof(big) - (size_t)n, "line%05d\n", i);
+        }
+    }
+
+    resetEditor();
+    editorOpen(writeTmp("scroll.c", big, (size_t)n));
+    CHECK(CONFIG.numrows == 100, "scroll: rows %d want 100", CONFIG.numrows);
+    CHECK(CONFIG.screen_rows == 24, "scroll: screen_rows %d want 24", CONFIG.screen_rows);
+
+    // view and cursor move together, so the cursor keeps its screen row
+    CONFIG.cursor_y = 0; CONFIG.cursor_x = 30; CONFIG.row_offset = 0;
+    editorScrollHalfPage(1);
+    CHECK_CURSOR(12, 3, "half down clamps cursor_x");
+    CHECK(CONFIG.row_offset == 12, "half down: row_offset %d want 12", CONFIG.row_offset);
+
+    editorScrollHalfPage(1);
+    CHECK(CONFIG.cursor_y == 24 && CONFIG.row_offset == 24, "half down twice: %d/%d",
+          CONFIG.cursor_y, CONFIG.row_offset);
+
+    // clamps at the last real row, never at numrows
+    for (int i = 0; i < 20; i++) {
+        editorScrollHalfPage(1);
+    }
+    CHECK(CONFIG.cursor_y == 99 && CONFIG.row_offset == 99, "half down clamp: %d/%d",
+          CONFIG.cursor_y, CONFIG.row_offset);
+
+    for (int i = 0; i < 20; i++) {
+        editorScrollHalfPage(-1);
+    }
+    CHECK(CONFIG.cursor_y == 0 && CONFIG.row_offset == 0, "half up clamp: %d/%d",
+          CONFIG.cursor_y, CONFIG.row_offset);
+
+    // a one row viewport advances by a row instead of stalling on 1/2 == 0
+    CONFIG.screen_rows = 1;
+    CONFIG.cursor_y = 0; CONFIG.row_offset = 0;
+    editorScrollHalfPage(1);
+    CHECK(CONFIG.cursor_y == 1 && CONFIG.row_offset == 1, "half down 1 row: %d/%d",
+          CONFIG.cursor_y, CONFIG.row_offset);
+    CONFIG.screen_rows = 24;
+
+    resetEditor();
+    editorScrollHalfPage(1);
+    CHECK(CONFIG.cursor_y == 0 && CONFIG.row_offset == 0, "half down empty: %d/%d",
+          CONFIG.cursor_y, CONFIG.row_offset);
+    editorScrollHalfPage(-1);
+    CHECK(CONFIG.cursor_y == 0 && CONFIG.row_offset == 0, "half up empty: %d/%d",
+          CONFIG.cursor_y, CONFIG.row_offset);
+}
+
+static void testYankRegister(void) {
+    const char *line0 = "foo.bar baz_1  qux";
+    static const char text[] = "foo.bar baz_1  qux\nint x = 42;\n\n   \nlast\n";
+    int len0 = (int)strlen(line0);
+
+    resetEditor();
+    editorFreeYank();  // the register is a static, it outlives resetEditor
+    editorOpen(writeTmp("yank.c", text, sizeof(text) - 1));
+
+    editorPasteLine();
+    CHECK(CONFIG.numrows == 5, "paste with empty register: rows %d want 5", CONFIG.numrows);
+
+    // borrowed row, so string has no nul: a strlen based yank would run off the mapping
+    CHECK(CONFIG.row[0].owned == 0, "yank: row 0 owned %d want 0 (borrowed)", CONFIG.row[0].owned);
+
+    CONFIG.cursor_y = 0; CONFIG.cursor_x = 7;
+    editorYankLine();
+    CONFIG.cursor_y = 2;
+    editorPasteLine();
+    CHECK(CONFIG.numrows == 6, "paste: rows %d want 6", CONFIG.numrows);
+    CHECK_CURSOR(3, 0, "paste lands on the new row");
+    CHECK(CONFIG.row[3].size == len0 && memcmp(CONFIG.row[3].string, line0, (size_t)len0) == 0,
+          "paste: row 3 is %.*s", CONFIG.row[3].size, CONFIG.row[3].string);
+    CHECK(CONFIG.row[2].size == 0, "paste: row 2 size %d want 0", CONFIG.row[2].size);
+    CHECK(CONFIG.dirty > 0, "paste: dirty not set");
+
+    // a yanked empty line is not the same as an empty register
+    CONFIG.cursor_y = 2;
+    editorYankLine();
+    editorPasteLine();
+    CHECK(CONFIG.numrows == 7 && CONFIG.row[3].size == 0,
+          "paste empty line: rows %d row3 %d", CONFIG.numrows, CONFIG.row[3].size);
+
+    resetEditor();
+    editorFreeYank();
+    editorOpen(writeTmp("cut.c", text, sizeof(text) - 1));
+    CONFIG.cursor_y = 4; CONFIG.cursor_x = 4;
+    editorCutLine();
+    CHECK(CONFIG.numrows == 4, "cut last: rows %d want 4", CONFIG.numrows);
+    CHECK_CURSOR(3, 3, "cut last clamps cursor");
+    editorPasteLine();
+    CHECK(CONFIG.numrows == 5 && CONFIG.row[4].size == 4 &&
+          memcmp(CONFIG.row[4].string, "last", 4) == 0,
+          "cut then paste round trip: rows %d", CONFIG.numrows);
+
+    while (CONFIG.numrows > 0) {
+        CONFIG.cursor_y = 0;
+        editorCutLine();
+    }
+    CHECK_CURSOR(0, 0, "cut to empty");
+    editorPasteLine();
+    CHECK(CONFIG.numrows == 1, "paste into empty buffer: rows %d want 1", CONFIG.numrows);
+
+    CONFIG.cursor_y = CONFIG.numrows;
+    editorCutLine();
+    editorYankLine();
+    CHECK(CONFIG.numrows == 1, "cut past eof: rows %d want 1", CONFIG.numrows);
+
+    editorFreeYank();
+}
+
 int main(void) {
     if (mkdtemp(tmpdir) == NULL) { perror("mkdtemp"); return 1; }
 
@@ -539,9 +712,13 @@ int main(void) {
     testBuffer();
     testRenderAndThread();
     testSave();
+    testWordMotion();
+    testHalfPageScroll();
+    testYankRegister();
 
     resetEditor();
     editorFreeOutput();
+    editorFreeYank();
 
     printf("%d checks, %d failures\n", checks, failures);
 
