@@ -289,8 +289,8 @@ static int scanRow(const char *buf, int len, int in_comment, unsigned char *hl) 
     int prev_sep = 1;
     int in_string = 0;
 
-    // preprocessor directive at column 0 gets keyword colour even if unknown
-    if (hl && len > 0 && buf[0] == '#') {
+    // preprocessor directive at column 0 gets keyword colour even if unknown but not for comments tho
+    if (hl && !in_comment && len > 0 && buf[0] == '#') {
         int i = 1;
         while (i < len && isspace((unsigned char)buf[i])) {
             i++;
@@ -372,7 +372,7 @@ static int scanRow(const char *buf, int len, int in_comment, unsigned char *hl) 
             }
         }
 
-        if (hl && (sx->flags & HL_HIGHLIGHT_NUMBERS)) {
+        if (hl && !in_comment && (sx->flags & HL_HIGHLIGHT_NUMBERS)) {
             if ((isdigit((unsigned char)c) && (prev_sep || prev_hl == HL_NUMBER)) || (c == '.' && prev_hl == HL_NUMBER)) {
                 hl[i] = HL_NUMBER;
                 i++;
@@ -381,7 +381,7 @@ static int scanRow(const char *buf, int len, int in_comment, unsigned char *hl) 
             }
         }
 
-        if (hl && prev_sep && kw_len && kw_first[(unsigned char)c]) {
+        if (hl && !in_comment && prev_sep && kw_len && kw_first[(unsigned char)c]) {
             int j, hit = 0;
             for (j = 0; keywords[j]; j++) {
                 int klen = kw_len[j];

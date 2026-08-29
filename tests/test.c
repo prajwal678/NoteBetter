@@ -193,6 +193,14 @@ static void testHighlightBasics(void) {
           "hl: python syntax not selected");
     CHECK(hlAt(0, 0) == HL_KEYWORD1, "hl: python 'def', got %d", hlAt(0, 0));
     CHECK(hlAt(1, 15) == HL_COMMENT, "hl: python '#' comment, got %d", hlAt(1, 15));
+
+    resetEditor();
+    const char *py_comment = "# if True\nreturn 1\n";
+    path = writeTmp("hl_comment.py", py_comment, strlen(py_comment));
+    editorOpen(path);
+    CHECK(CONFIG.syntax != NULL && strcmp(CONFIG.syntax->filetype, "python") == 0, "hl: python syntax not selected for comment regression");
+    CHECK(hlAt(0, 0) == HL_COMMENT, "hl: python full-line '#' comment should stay comment, got %d", hlAt(0, 0));
+    CHECK(hlAt(0, 4) == HL_COMMENT, "hl: python '#' comment text should stay comment");
 }
 
 /* a block comment that spans thousands of rows, the whole point of the
